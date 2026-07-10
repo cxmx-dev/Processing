@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>hexCloud</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      background: #0a0c14;
+      overflow: hidden;
+      font-family: system-ui, sans-serif;
+    }
+    canvas { display: block; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.11.3/lib/p5.min.js"></script>
+</head>
+<body>
+<script>
+/**
+ * hexCloud — generative hex lattice + drifting points (p5.js)
+ * Faithful port of sketches/hexCloud/hexCloud.pde
+ *
+ * space pause · h hex · p points · r reseed · [ ] rings · mouse warp
+ */
+
+let rings = 7;
+let hexSize = 22;
+let paused = false;
+let showHex = true;
+let showPoints = true;
+let t = 0;
+let cells = [];
+let drift = [];
+
+function setup() {
+  createCanvas(windowWidth, windowHeight);
+  // Match Processing smooth / retina feel
+  pixelDensity(window.devicePixelRatio || 1);
+  colorMode(HSB, 360, 100, 100, 100);
+  rebuild();
+}
+
+function rebuild() {
+  cells = axialDisk(rings);
+  drift = [];
+  for (let i = 0; i < cells.length; i++) {
+    if (random(1) < 0.55) {
+      const c = cells[i];
+      drift.push(new DriftPoint(c.q, c.r, random(TWO_PI)));
+    }
+  }
+}
+
+function draw() {
+  background(230, 18, 8);
+
+  // vignette-ish wash (same as .pde)
+  noStroke();
+  for (let i = 6; i >= 0; i--) {
+    fill(230, 12, 10 + i * 1.2, 18);
+    ellipse(width * 0.5, height * 0.5, width * 0.25 * i, height * 0.25 * i);
+  }
+
+  push();
+  translate(width * 0.5, height * 0.52);
+
+  const breath = 1.0 + 0.035 * sin(t * 0.7);
+  const mx = mouseX - width * 0.5;
+  const my = mouseY - height * 0.52;
+
+  if (showHex) {
+    for (let i = 0; i < cells.length; i++) {
+      const c = cells[i];
+      const p = axialToPixel(c.q, c.r, hexSize * breath);
+      const d = dist(p.x, p.y, mx, my);
+      const warp = map(constrain(d, 0, 220), 0, 220, 1.15, 0.92);
+      const a = map(constrain(d, 0, 280), 0, 280, 55, 12);
+      const hue = (200 + c.q * 8 + c.r * 5 + t * 12) % 360;
+
+      stroke(hue, 35, 85, a);
+      strokeWeight(1.1);
+      noFill();
+      drawHex(p.x * warp, p.y * warp, hexSize * breath * 0.92);
+    }
+  }
+
+  if (showPoints && !paused) {
+    for (let i = 0; i < drift.length; i++) {
+      drift[i].update(t, mx, my, breath);
+    }
+  }
+
+  if (showPoints) {
+    strokeWeight(1);
+    for (let i = 0; i < drift.length; i++) {
+      const a = drift[i];
+      for (let j = i + 1; j < drift.length; j++) {
+        const b = drift[j];
+        const d = dist(a.px, a.py, b.px, b.py);
+        if (d < hexSize * 2.4) {
+          const alpha = map(d, 0, hexSize * 2.4, 40, 0);
+          stroke(190, 30, 90, alpha);
+          line(a.px, a.py, b.px, b.py);
+        }
+      }
+    }
+
+    noStroke();
+    for (let i = 0; i < drift.length; i++) {
+      drift[i].display();
+    }
+  }
+
+  pop();
+
+  if (!paused) t += 0.016;
+
+  fill(200, 10, 90, 70);
+  noStroke();
+  textSize(12);
+  textAlign(LEFT, BOTTOM);
+  text(
+    "hexCloud  ·  space pause  h hex  p points  r reseed  [ ] rings (" + rings + ")",
+    14,
+    height - 12
+  );
+}
+
+function keyPressed() {
+  if (key === " ") paused = !paused;
+  if (key === "h" || key === "H") showHex = !showHex;
+  if (key === "p" || key === "P") showPoints = !showPoints;
+  if (key === "r" || key === "R") {
+    t = 0;
+    rebuild();
+  }
+  if (key === "[") {
+    rings = max(2, rings - 1);
+    rebuild();
+  }
+  if (key === "]") {
+    rings = min(14, rings + 1);
+    rebuild();
+  }
+}
+
+function windowResized() {
+  resizeCanvas(windowWidth, windowHeight);
+}
+
+// --- hex math (axial) — same formulas as hexCloud.pde ---
+
+function axialDisk(n) {
+  const out = [];
+  for (let q = -n; q <= n; q++) {
+    const r1 = Math.max(-n, -q - n);
+    const r2 = Math.min(n, -q + n);
+    for (let r = r1; r <= r2; r++) {
+      out.push({ q: q, r: r });
+    }
+  }
+  return out;
+}
+
+function axialToPixel(q, r, size) {
+  // pointy-top axial → pixel (matches Processing sqrt(3) form)
+  const s3 = Math.sqrt(3);
+  const x = size * (s3 * q + (s3 / 2.0) * r);
+  const y = size * (1.5 * r);
+  return { x: x, y: y };
+}
+
+function drawHex(cx, cy, size) {
+  beginShape();
+  for (let i = 0; i < 6; i++) {
+    const a = TWO_PI * i / 6.0 + PI / 6.0;
+    vertex(cx + cos(a) * size, cy + sin(a) * size);
+  }
+  endShape(CLOSE);
+}
+
+class DriftPoint {
+  constructor(q, r, phase) {
+    this.q = q;
+    this.r = r;
+    this.phase = phase;
+    this.px = 0;
+    this.py = 0;
+    this.hue = (190 + q * 10 + r * 7 + random(30)) % 360;
+  }
+
+  update(time, mx, my, breath) {
+    const home = axialToPixel(this.q, this.r, hexSize * breath);
+    const wobble =
+      4.5 * sin(time * 1.3 + this.phase) +
+      2.0 * cos(time * 0.9 + this.phase * 1.7);
+    const ang = this.phase + time * 0.4;
+    this.px = home.x + cos(ang) * wobble;
+    this.py = home.y + sin(ang * 1.1) * wobble;
+
+    const d = dist(this.px, this.py, mx, my);
+    const influence = Math.exp((-d * d) / (2 * 140 * 140));
+    this.px += (mx - this.px) * influence * 0.18;
+    this.py += (my - this.py) * influence * 0.18;
+  }
+
+  display() {
+    const pulse = 2.2 + 1.4 * sin(t * 2.0 + this.phase);
+    fill(this.hue, 45, 95, 85);
+    ellipse(this.px, this.py, pulse * 2, pulse * 2);
+    fill(this.hue, 20, 100, 35);
+    ellipse(this.px, this.py, pulse * 4.5, pulse * 4.5);
+  }
+}
+</script>
+</body>
+</html>
