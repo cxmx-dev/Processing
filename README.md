@@ -76,6 +76,9 @@ Paired sketches share behavior; Processing is the reference look.
 
 ## Version History
 
+71026 2:49:40:70 PM CST  
+• `update .mds`: device-aware p5 (`device.js`, touch bars, phone DPR cap); hub **`start-all.ps1`** / `-SyncOnly` for batch push. Processing IDE remains desktop local.
+
 71026 1:39:53:75 PM CST  
 • Hub co-locate under `Repos\Processing`; first push to GitHub (`cxmx-dev/Processing`, local-tool — no Pages). Live pairs `template` / `hexCloud` only.
 

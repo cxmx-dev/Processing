@@ -27,6 +27,8 @@ Scratchpad for sketch ideas, moods, and half-baked directions. No polish require
 - Vanilla canvas “white square” snippets = one idea, two sizes; easy p5 port (not added as a sketch yet).
 - `update .mds` 3:32 AM CST — README / notes / USER-NOTES aligned to current pairs.
 - PM: co-located into hub `Repos\Processing`; pushed public repo `cxmx-dev/Processing` (local-tool).
+- Device-aware p5: `device.js`, on-screen touch bars, phone pixelDensity cap.
+- Hub batch: `.\scripts\start-all.ps1` (Processing `-SyncOnly` pushes public tree).
 
 <!--
 ### MMDDYY
