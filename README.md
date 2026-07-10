@@ -43,6 +43,8 @@ npx --yes serve p5js/template
 
 Or open `p5js/<name>/index.html` directly. p5 loads from CDN; for offline, drop `p5.min.js` into `assets/` and point the script tag there.
 
+**Device-aware (p5):** sketches use full viewport, `device.js` profile, capped pixel density on phones, and on-screen control bars on touch. **Processing (Java IDE)** remains a desktop local workflow.
+
 New sketch: copy `p5js/template/`.
 
 Machine-specific paths → `USER-NOTES.md` (local only, gitignored).

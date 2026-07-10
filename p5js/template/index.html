@@ -2,7 +2,8 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+  <meta name="mobile-web-app-capable" content="yes" />
   <title>template</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -10,12 +11,43 @@
       background: #0c0e16;
       overflow: hidden;
       font-family: system-ui, sans-serif;
+      touch-action: none;
+      -webkit-user-select: none;
+      user-select: none;
     }
-    canvas { display: block; }
+    canvas { display: block; width: 100%; height: 100%; }
+    #touch-bar {
+      display: none;
+      position: fixed;
+      left: 8px; right: 8px; bottom: max(8px, env(safe-area-inset-bottom));
+      z-index: 10;
+      gap: 6px;
+      grid-template-columns: repeat(3, 1fr);
+    }
+    html.input-touch #touch-bar, html.device-phone #touch-bar, html.device-tablet #touch-bar {
+      display: grid;
+    }
+    #touch-bar button {
+      min-height: 44px;
+      border-radius: 8px;
+      border: 1px solid rgba(120, 200, 180, 0.35);
+      background: rgba(10, 14, 24, 0.82);
+      color: #c8ffe8;
+      font: 600 11px/1 system-ui, sans-serif;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    #touch-bar button:active { background: rgba(40, 140, 120, 0.4); }
   </style>
+  <script src="device.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/p5@1.11.3/lib/p5.min.js"></script>
 </head>
 <body>
+  <div id="touch-bar" aria-label="Touch controls">
+    <button type="button" data-act="pause">Pause</button>
+    <button type="button" data-act="hex">Hex</button>
+    <button type="button" data-act="reset">Reset</button>
+  </div>
 <script>
 /**
  * template — p5.js starter (port of sketches/template/template.pde)
@@ -29,12 +61,15 @@ let showHex = true;
 
 function setup() {
   createCanvas(windowWidth, windowHeight);
-  pixelDensity(window.devicePixelRatio || 1);
+  const p = window.DeviceProfile && DeviceProfile.get && DeviceProfile.get();
+  const dpr = (p && p.isPhone) ? Math.min(window.devicePixelRatio || 1, 2) : (window.devicePixelRatio || 1);
+  pixelDensity(dpr);
   // RGB like the Processing template (not HSB)
   colorMode(RGB, 255);
   for (let i = 0; i < 80; i++) {
     particles.push(new Particle(random(width), random(height)));
   }
+  wireTouchBar();
 }
 
 function draw() {
@@ -80,6 +115,14 @@ function mousePressed() {
   particles.push(new Particle(mouseX, mouseY));
 }
 
+function touchStarted() {
+  // spawn on touch (same as click)
+  if (touches && touches.length) {
+    particles.push(new Particle(touches[0].x, touches[0].y));
+  }
+  return false;
+}
+
 function keyPressed() {
   if (key === " ") paused = !paused;
   if (key === "h" || key === "H") showHex = !showHex;
@@ -93,6 +136,25 @@ function keyPressed() {
 
 function windowResized() {
   resizeCanvas(windowWidth, windowHeight);
+}
+
+function wireTouchBar() {
+  const bar = document.getElementById('touch-bar');
+  if (!bar) return;
+  bar.querySelectorAll('button').forEach((btn) => {
+    btn.addEventListener('pointerdown', (ev) => {
+      ev.preventDefault();
+      const act = btn.getAttribute('data-act');
+      if (act === 'pause') paused = !paused;
+      if (act === 'hex') showHex = !showHex;
+      if (act === 'reset') {
+        particles = [];
+        for (let i = 0; i < 80; i++) {
+          particles.push(new Particle(random(width), random(height)));
+        }
+      }
+    });
+  });
 }
 
 function drawHexHint(cx, cy, r) {
