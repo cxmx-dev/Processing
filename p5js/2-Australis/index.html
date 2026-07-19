@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <title>2-Australis</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      background: #000006;
+      overflow: hidden;
+      font-family: system-ui, sans-serif;
+      touch-action: none;
+      -webkit-user-select: none;
+      user-select: none;
+      cursor: grab;
+    }
+    html.dragging, html.dragging body { cursor: grabbing; }
+    canvas { display: block; width: 100%; height: 100%; }
+    #hud {
+      position: fixed;
+      left: 12px;
+      bottom: max(10px, env(safe-area-inset-bottom));
+      z-index: 5;
+      color: rgba(255, 190, 160, 0.45);
+      font: 11px/1.35 system-ui, sans-serif;
+      pointer-events: none;
+      text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+    }
+    #hud.hidden { display: none; }
+    #touch-bar {
+      display: none;
+      position: fixed;
+      left: 8px; right: 8px;
+      bottom: max(8px, env(safe-area-inset-bottom));
+      z-index: 10;
+      gap: 6px;
+      grid-template-columns: repeat(4, 1fr);
+    }
+    html.input-touch #touch-bar,
+    html.device-phone #touch-bar,
+    html.device-tablet #touch-bar {
+      display: grid;
+    }
+    html.input-touch #hud,
+    html.device-phone #hud,
+    html.device-tablet #hud {
+      bottom: 60px;
+    }
+    #touch-bar button {
+      min-height: 44px;
+      border-radius: 8px;
+      border: 1px solid rgba(220, 80, 60, 0.45);
+      background: rgba(10, 4, 12, 0.9);
+      color: #ffc8b0;
+      font: 600 11px/1 system-ui, sans-serif;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    #touch-bar button:active { background: rgba(140, 30, 40, 0.5); }
+  </style>
+  <script src="device.js"></script>
+  <script src="nebula-data.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.11.3/lib/p5.min.js"></script>
+</head>
+<body>
+  <div id="hud">drag look · space auto-spin · r reset · h hud</div>
+  <div id="touch-bar" aria-label="Touch controls">
+    <button type="button" data-act="spin">Spin</button>
+    <button type="button" data-act="reset">Reset</button>
+    <button type="button" data-act="pulse">Pulse</button>
+    <button type="button" data-act="hud">Hud</button>
+  </div>
+<script>
+/**
+ * 2-Australis — sky sphere free-look
+ *
+ * You sit at the center of a textured skysphere (nebula plate on the inside).
+ * Drag to look any direction; optional slow auto-spin.
+ *
+ * Plate: window.NEBULA_DATA_URI (file:// safe) or nebula.jpg
+ *
+ * drag look · space toggle auto-spin · r reset view · h hud
+ */
+
+let plate;
+let yaw = 0;       // left/right
+let pitch = 0;     // up/down
+let targetYaw = 0;
+let targetPitch = 0;
+let autoSpin = true;
+let showHud = true;
+let pulse = 0;
+let isPhone = false;
+let dragging = false;
+let lastX = 0;
+let lastY = 0;
+let sphereDetail = 48;
+let sphereR = 1200;
+let sens = 0.005;
+// inertia
+let velYaw = 0;
+let velPitch = 0;
+
+function preload() {
+  const src =
+    (typeof window.NEBULA_DATA_URI === 'string' && window.NEBULA_DATA_URI.length > 32)
+      ? window.NEBULA_DATA_URI
+      : 'nebula.jpg';
+  plate = loadImage(src);
+}
+
+function setup() {
+  const prof = window.DeviceProfile && DeviceProfile.get && DeviceProfile.get();
+  isPhone = !!(prof && prof.isPhone);
+
+  let dpr = window.devicePixelRatio || 1;
+  const px = window.innerWidth * window.innerHeight;
+  if (isPhone) dpr = Math.min(dpr, 1.25);
+  else if (px > 2.2e6) dpr = Math.min(dpr, 1.2);
+  else dpr = Math.min(dpr, 1.5);
+
+  createCanvas(windowWidth, windowHeight, WEBGL);
+  pixelDensity(dpr);
+  setAttributes('antialias', true);
+  frameRate(60);
+
+  // sphere tessellation vs fill-rate
+  sphereDetail = isPhone ? 32 : 56;
+  sphereR = 2000;
+  sens = isPhone ? 0.0065 : 0.0045;
+
+  // start looking slightly toward bright core of the still
+  yaw = 0.15;
+  pitch = -0.08;
+  targetYaw = yaw;
+  targetPitch = pitch;
+
+  noStroke();
+  textureMode(NORMAL);
+  textureWrap(CLAMP);
+
+  wireTouchBar();
+  wirePointerLook();
+}
+
+function draw() {
+  const t = millis() * 0.001;
+  if (pulse > 0) pulse *= 0.96;
+
+  // auto-spin when not dragging
+  if (autoSpin && !dragging) {
+    targetYaw += 0.0012;
+  }
+
+  // inertia after flick
+  if (!dragging) {
+    targetYaw += velYaw;
+    targetPitch += velPitch;
+    velYaw *= 0.94;
+    velPitch *= 0.94;
+    if (Math.abs(velYaw) < 0.00001) velYaw = 0;
+    if (Math.abs(velPitch) < 0.00001) velPitch = 0;
+  }
+
+  // smooth follow (slight lag feels cinematic)
+  yaw = lerp(yaw, targetYaw, 0.22);
+  pitch = lerp(pitch, targetPitch, 0.22);
+  // allow full sphere look; wrap yaw, clamp pitch to avoid flip
+  pitch = constrain(pitch, -HALF_PI + 0.02, HALF_PI - 0.02);
+  targetPitch = constrain(targetPitch, -HALF_PI + 0.02, HALF_PI - 0.02);
+
+  background(0);
+
+  // free-look camera at origin
+  const lx = Math.cos(pitch) * Math.sin(yaw);
+  const ly = Math.sin(pitch);
+  const lz = Math.cos(pitch) * Math.cos(yaw);
+  camera(0, 0, 0, lx, ly, lz, 0, 1, 0);
+
+  // wide FOV for sky immersion
+  perspective(PI / 2.4, width / Math.max(height, 1), 1, sphereR * 3);
+
+  // ambient lift during pulse
+  const glow = 255 * (0.92 + 0.08 * Math.sin(t * 0.4) + pulse * 0.12);
+
+  // --- skysphere (render inside) ---
+  push();
+  // flip X so sphere faces point inward (view from center)
+  scale(-1, 1, 1);
+  // slow texture-space feel: gentle roll of the sphere itself
+  rotateY(t * 0.015);
+  rotateX(Math.sin(t * 0.07) * 0.02);
+
+  if (plate && plate.width > 0) {
+    texture(plate);
+  } else {
+    fill(40, 10, 15);
+  }
+
+  // slight emissive brightness via tint
+  tint(glow, glow * 0.98, glow * 0.95);
+  sphere(sphereR, sphereDetail, Math.max(16, (sphereDetail * 0.65) | 0));
+  noTint();
+  pop();
+
+  // soft inner fog / vignette via giant translucent sphere (optional depth cue)
+  push();
+  scale(-1, 1, 1);
+  noStroke();
+  fill(0, 0, 8, 18);
+  sphere(sphereR * 0.25, 16, 12);
+  pop();
+
+  const hud = document.getElementById('hud');
+  if (hud) {
+    hud.classList.toggle('hidden', !showHud);
+    if (showHud && !isPhone) {
+      // keep static text; auto-spin state not required in DOM every frame
+    }
+  }
+}
+
+function applyLookDelta(dx, dy) {
+  // drag right → look right (invert Y for natural mouse-look)
+  targetYaw -= dx * sens;
+  targetPitch += dy * sens;
+  targetPitch = constrain(targetPitch, -HALF_PI + 0.02, HALF_PI - 0.02);
+  // inertia from last delta
+  velYaw = -dx * sens * 0.35;
+  velPitch = dy * sens * 0.35;
+  // user control pauses auto-spin until they toggle back? keep spin only when idle
+}
+
+function wirePointerLook() {
+  const el = document.body;
+
+  const onDown = (ev) => {
+    if (ev.target && ev.target.closest && ev.target.closest('#touch-bar')) return;
+    dragging = true;
+    document.documentElement.classList.add('dragging');
+    const pt = pointerPos(ev);
+    lastX = pt.x;
+    lastY = pt.y;
+    velYaw = 0;
+    velPitch = 0;
+    if (ev.pointerId != null && ev.target.setPointerCapture) {
+      try { ev.target.setPointerCapture(ev.pointerId); } catch (e) { /* ignore */ }
+    }
+  };
+
+  const onMove = (ev) => {
+    if (!dragging) return;
+    const pt = pointerPos(ev);
+    const dx = pt.x - lastX;
+    const dy = pt.y - lastY;
+    lastX = pt.x;
+    lastY = pt.y;
+    applyLookDelta(dx, dy);
+    ev.preventDefault();
+  };
+
+  const onUp = () => {
+    dragging = false;
+    document.documentElement.classList.remove('dragging');
+  };
+
+  // use window so drag continues off-canvas
+  window.addEventListener('pointerdown', onDown, { passive: true });
+  window.addEventListener('pointermove', onMove, { passive: false });
+  window.addEventListener('pointerup', onUp, { passive: true });
+  window.addEventListener('pointercancel', onUp, { passive: true });
+}
+
+function pointerPos(ev) {
+  if (ev.touches && ev.touches[0]) {
+    return { x: ev.touches[0].clientX, y: ev.touches[0].clientY };
+  }
+  return { x: ev.clientX, y: ev.clientY };
+}
+
+function keyPressed() {
+  if (key === ' ') {
+    autoSpin = !autoSpin;
+  }
+  if (key === 'r' || key === 'R') {
+    doReset();
+  }
+  if (key === 'h' || key === 'H') showHud = !showHud;
+  if (key === 'p' || key === 'P') pulse = 1;
+}
+
+function doReset() {
+  targetYaw = 0.15;
+  targetPitch = -0.08;
+  yaw = targetYaw;
+  pitch = targetPitch;
+  velYaw = 0;
+  velPitch = 0;
+  pulse = 0;
+}
+
+function windowResized() {
+  let dpr = window.devicePixelRatio || 1;
+  const px = window.innerWidth * window.innerHeight;
+  if (isPhone) dpr = Math.min(dpr, 1.25);
+  else if (px > 2.2e6) dpr = Math.min(dpr, 1.2);
+  else dpr = Math.min(dpr, 1.5);
+  pixelDensity(dpr);
+  resizeCanvas(windowWidth, windowHeight);
+}
+
+function wireTouchBar() {
+  const bar = document.getElementById('touch-bar');
+  if (!bar) return;
+  bar.querySelectorAll('button').forEach((btn) => {
+    btn.addEventListener('pointerdown', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const act = btn.getAttribute('data-act');
+      if (act === 'spin') autoSpin = !autoSpin;
+      if (act === 'reset') doReset();
+      if (act === 'pulse') pulse = 1;
+      if (act === 'hud') showHud = !showHud;
+    });
+  });
+}
+
+// suppress p5 default touch scroll behaviors that fight free-look
+function touchStarted() {
+  if (event && event.target && event.target.closest && event.target.closest('#touch-bar')) {
+    return true;
+  }
+  return false;
+}
+function touchMoved() {
+  return false;
+}
+</script>
+</body>
+</html>

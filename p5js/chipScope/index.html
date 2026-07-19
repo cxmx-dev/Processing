@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <title>chipScope</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      background: #050808;
+      overflow: hidden;
+      font-family: system-ui, sans-serif;
+      touch-action: none;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    canvas { display: block; width: 100%; height: 100%; }
+    #touch-bar {
+      display: none;
+      position: fixed;
+      left: 8px; right: 8px; bottom: max(8px, env(safe-area-inset-bottom));
+      z-index: 10;
+      gap: 6px;
+      grid-template-columns: repeat(4, 1fr);
+    }
+    html.input-touch #touch-bar, html.device-phone #touch-bar, html.device-tablet #touch-bar {
+      display: grid;
+    }
+    #touch-bar button {
+      min-height: 44px;
+      border-radius: 8px;
+      border: 1px solid rgba(80, 200, 140, 0.4);
+      background: rgba(6, 14, 12, 0.9);
+      color: #b8ffe0;
+      font: 600 11px/1 system-ui, sans-serif;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    #touch-bar button:active { background: rgba(30, 120, 80, 0.45); }
+  </style>
+  <script src="device.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.11.3/lib/p5.min.js"></script>
+</head>
+<body>
+  <div id="touch-bar" aria-label="Touch controls">
+    <button type="button" data-act="pause">Pause</button>
+    <button type="button" data-act="faster">Faster</button>
+    <button type="button" data-act="slower">Slower</button>
+    <button type="button" data-act="reset">Reset</button>
+  </div>
+<script>
+/**
+ * chipScope — microscope dive into a microchip
+ *
+ * Continuous zoom into hierarchical die layers: metal traces, vias, pads,
+ * SRAM-ish arrays, poly routing. When one scale bottoms out, the next
+ * fractal layer takes over so the dive never ends.
+ *
+ * Microscope optics: circular FOV, reticle, chromatic fringe, dust, focus breath.
+ *
+ * space pause · [ ] slower/faster · r reset · drag pans die · scroll speed
+ */
+
+let paused = false;
+let showHud = true;
+let isPhone = false;
+
+// log-zoom: smooth infinite dive
+let logZ = 0;
+let speed = 0.42; // log units per second
+let panX = 0;
+let panY = 0;
+let targetPanX = 0;
+let targetPanY = 0;
+
+// drag
+let dragging = false;
+let lastMX = 0;
+let lastMY = 0;
+
+// optics
+let dust = [];
+let focusPhase = 0;
+
+// quality
+let cellBudget = 22;
+let detail = 1;
+
+function setup() {
+  createCanvas(windowWidth, windowHeight);
+  const p = window.DeviceProfile && DeviceProfile.get && DeviceProfile.get();
+  isPhone = !!(p && p.isPhone);
+  const dpr = isPhone
+    ? Math.min(window.devicePixelRatio || 1, 1.5)
+    : Math.min(window.devicePixelRatio || 1, 2);
+  pixelDensity(dpr);
+
+  cellBudget = isPhone ? 14 : 24;
+  detail = isPhone ? 0 : 1;
+
+  seedDust();
+  colorMode(RGB, 255, 255, 255, 255);
+  wireTouchBar();
+  wireDrag();
+}
+
+function seedDust() {
+  dust = [];
+  const n = isPhone ? 18 : 36;
+  for (let i = 0; i < n; i++) {
+    dust.push({
+      a: random(TWO_PI),
+      r: random(0.15, 0.92),
+      s: random(0.6, 2.8),
+      rot: random(TWO_PI),
+      spin: random(-0.001, 0.001)
+    });
+  }
+}
+
+function draw() {
+  const dt = deltaTime / 1000;
+  if (!paused) {
+    logZ += speed * dt;
+    focusPhase += dt * 1.2;
+  }
+
+  // smooth pan
+  panX = lerp(panX, targetPanX, 0.12);
+  panY = lerp(panY, targetPanY, 0.12);
+
+  // lab bench dark
+  background(6, 10, 12);
+
+  const cx = width * 0.5;
+  const cy = height * 0.5;
+  const fovR = Math.min(width, height) * 0.46;
+
+  // clip to circular eyepiece
+  drawingContext.save();
+  drawingContext.beginPath();
+  drawingContext.arc(cx, cy, fovR, 0, Math.PI * 2);
+  drawingContext.clip();
+
+  // chip surface
+  drawDieField(cx, cy, fovR);
+
+  drawingContext.restore();
+
+  // optics on top of clip
+  drawOptics(cx, cy, fovR);
+
+  if (showHud) {
+    const prof = window.DeviceProfile && DeviceProfile.get && DeviceProfile.get();
+    if (!prof || !prof.isTouch) {
+      noStroke();
+      fill(160, 220, 190, 140);
+      textSize(11);
+      textAlign(LEFT, BASELINE);
+      const mag = Math.pow(2, logZ).toExponential(2);
+      text(
+        'space pause  ·  [ ] speed  ·  r reset  ·  drag pan  ·  mag ×' + mag,
+        12,
+        height - 14
+      );
+    }
+  }
+}
+
+/**
+ * Two hierarchical layers crossfaded by fractional log-zoom → infinite dive.
+ */
+function drawDieField(cx, cy, fovR) {
+  // base silicon under everything
+  noStroke();
+  fill(18, 42, 36);
+  rect(cx - fovR, cy - fovR, fovR * 2, fovR * 2);
+
+  const layer = Math.floor(logZ);
+  const frac = logZ - layer;
+  // ease blend near handoff so it feels continuous
+  const blend = frac * frac * (3 - 2 * frac);
+
+  // zoom doubles every integer logZ
+  const zoomA = Math.pow(2, layer + frac);
+  const zoomB = Math.pow(2, layer + 1 + frac);
+
+  // layer A fading out, B fading in
+  push();
+  translate(cx, cy);
+  // pan in die-space (stronger when more zoomed? keep constant screen pan)
+  translate(panX, panY);
+  drawChipLayer(zoomA, layer, 1 - blend * 0.85);
+  drawChipLayer(zoomB, layer + 1, blend);
+  pop();
+
+  // subtle scan / focus shimmer
+  const shimmer = 0.5 + 0.5 * Math.sin(focusPhase * 2.1);
+  noStroke();
+  fill(120, 255, 180, 4 + shimmer * 5);
+  ellipse(cx, cy, fovR * 1.6, fovR * 1.6);
+}
+
+function drawChipLayer(zoom, seedLayer, alphaMul) {
+  if (alphaMul < 0.02) return;
+
+  // world units visible ~ screen / zoom
+  const view = Math.max(width, height) / zoom;
+  // cell size in world units — denser as we invent deeper metal layers
+  const cell = 48 / Math.pow(1.15, seedLayer % 7);
+  const half = view * 0.75;
+
+  // which cells are under the lens
+  const x0 = Math.floor((-half - panX / zoom) / cell) - 1;
+  const y0 = Math.floor((-half - panY / zoom) / cell) - 1;
+  const x1 = Math.ceil((half - panX / zoom) / cell) + 1;
+  const y1 = Math.ceil((half - panY / zoom) / cell) + 1;
+
+  // budget guard
+  const maxCells = cellBudget * cellBudget;
+  let count = 0;
+
+  push();
+  // must not name params "scale" — that shadows p5.scale()
+  scale(zoom, zoom);
+
+  for (let gy = y0; gy <= y1; gy++) {
+    for (let gx = x0; gx <= x1; gx++) {
+      if (count++ > maxCells) break;
+      drawCell(gx, gy, cell, seedLayer, alphaMul);
+    }
+    if (count > maxCells) break;
+  }
+  pop();
+}
+
+/** Deterministic hash 0..1 from cell + layer */
+function h2(x, y, s) {
+  const n = Math.sin(x * 127.1 + y * 311.7 + s * 74.7) * 43758.5453;
+  return n - Math.floor(n);
+}
+
+function drawCell(gx, gy, cell, layer, a) {
+  const x = gx * cell;
+  const y = gy * cell;
+  const r0 = h2(gx, gy, layer);
+  const r1 = h2(gx + 3, gy - 2, layer + 1);
+  const r2 = h2(gx - 5, gy + 7, layer + 2);
+  const r3 = h2(gx * 2, gy, layer + 3);
+  const kind = Math.floor(r0 * 6); // 0..5 block types
+
+  const m = cell * 0.08; // margin
+  const x0 = x + m;
+  const y0 = y + m;
+  const cw = cell - m * 2;
+  const ch = cell - m * 2;
+
+  // substrate tile tint (silicon / oxide / poly)
+  const layerHue = layer % 5;
+  noStroke();
+  if (layerHue === 0) fill(22, 55, 48, 220 * a);
+  else if (layerHue === 1) fill(28, 48, 58, 220 * a);
+  else if (layerHue === 2) fill(40, 52, 38, 220 * a);
+  else if (layerHue === 3) fill(30, 40, 50, 220 * a);
+  else fill(24, 46, 42, 220 * a);
+  rect(x0, y0, cw, ch);
+
+  // type-specific geometry
+  if (kind === 0) {
+    // metal bus: parallel traces
+    const n = 3 + Math.floor(r1 * 5);
+    const horiz = r2 > 0.5;
+    stroke(180 + r3 * 50, 150 + r1 * 40, 60, 200 * a);
+    strokeWeight(Math.max(0.4, cell * 0.035));
+    for (let i = 0; i < n; i++) {
+      const t = (i + 1) / (n + 1);
+      if (horiz) {
+        const yy = y0 + ch * t;
+        line(x0, yy, x0 + cw, yy);
+      } else {
+        const xx = x0 + cw * t;
+        line(xx, y0, xx, y0 + ch);
+      }
+    }
+    // vias
+    noStroke();
+    fill(210, 190, 90, 210 * a);
+    const vn = 1 + Math.floor(r1 * 3);
+    for (let i = 0; i < vn; i++) {
+      const vx = x0 + cw * h2(gx, i, layer + 9);
+      const vy = y0 + ch * h2(i, gy, layer + 11);
+      circle(vx, vy, cell * 0.08);
+    }
+  } else if (kind === 1) {
+    // bond / pad block
+    noStroke();
+    fill(200, 170, 70, 200 * a);
+    const pad = cell * 0.35;
+    rect(x + cell * 0.5 - pad * 0.5, y + cell * 0.5 - pad * 0.5, pad, pad, cell * 0.03);
+    fill(40, 50, 45, 180 * a);
+    circle(x + cell * 0.5, y + cell * 0.5, pad * 0.35);
+    // lead-out traces
+    stroke(190, 160, 70, 180 * a);
+    strokeWeight(Math.max(0.5, cell * 0.04));
+    if (r1 > 0.5) line(x + cell * 0.5, y0, x + cell * 0.5, y + cell * 0.5 - pad * 0.5);
+    else line(x0, y + cell * 0.5, x + cell * 0.5 - pad * 0.5, y + cell * 0.5);
+  } else if (kind === 2) {
+    // SRAM / grid array
+    const g = 4 + Math.floor(r1 * 6);
+    const gw = cw / g;
+    const gh = ch / g;
+    noStroke();
+    for (let j = 0; j < g; j++) {
+      for (let i = 0; i < g; i++) {
+        const on = h2(gx + i, gy + j, layer + 4) > 0.45;
+        if (on) fill(60, 140, 110, 190 * a);
+        else fill(30, 70, 60, 160 * a);
+        rect(x0 + i * gw + gw * 0.12, y0 + j * gh + gh * 0.12, gw * 0.76, gh * 0.76);
+      }
+    }
+  } else if (kind === 3) {
+    // Manhattan routing maze
+    stroke(160, 140, 80, 200 * a);
+    strokeWeight(Math.max(0.5, cell * 0.045));
+    noFill();
+    const steps = 3 + Math.floor(r2 * 4);
+    let px = x0 + cw * 0.2;
+    let py = y0 + ch * 0.2;
+    for (let i = 0; i < steps; i++) {
+      const horiz = ((i + (r1 > 0.5 ? 1 : 0)) % 2) === 0;
+      const nx = x0 + cw * h2(gx, i, layer + 20);
+      const ny = y0 + ch * h2(i, gy, layer + 21);
+      if (horiz) {
+        line(px, py, nx, py);
+        line(nx, py, nx, ny);
+      } else {
+        line(px, py, px, ny);
+        line(px, ny, nx, ny);
+      }
+      px = nx;
+      py = ny;
+    }
+    noStroke();
+    fill(220, 200, 100, 200 * a);
+    circle(px, py, cell * 0.07);
+  } else if (kind === 4) {
+    // transistor-ish fins / poly fingers
+    const n = 4 + Math.floor(r1 * 6);
+    noStroke();
+    fill(70, 90, 100, 200 * a);
+    for (let i = 0; i < n; i++) {
+      const t = (i + 0.5) / n;
+      rect(x0 + cw * t - cw * 0.04, y0 + ch * 0.15, cw * 0.08, ch * 0.7);
+    }
+    stroke(180, 150, 70, 180 * a);
+    strokeWeight(Math.max(0.4, cell * 0.03));
+    line(x0, y0 + ch * 0.35, x0 + cw, y0 + ch * 0.35);
+    line(x0, y0 + ch * 0.65, x0 + cw, y0 + ch * 0.65);
+  } else {
+    // mixed: contact field
+    noStroke();
+    const n = 6 + Math.floor(r1 * 10);
+    for (let i = 0; i < n; i++) {
+      const px = x0 + cw * h2(gx + i, gy, layer + 30);
+      const py = y0 + ch * h2(gx, gy + i, layer + 31);
+      fill(200, 180, 90, 200 * a);
+      circle(px, py, cell * (0.04 + h2(i, layer, gx) * 0.05));
+    }
+    stroke(100, 180, 140, 120 * a);
+    strokeWeight(Math.max(0.3, cell * 0.02));
+    // thin interconnect
+    for (let i = 0; i < 3; i++) {
+      const yy = y0 + ch * ((i + 1) / 4);
+      line(x0, yy, x0 + cw, yy);
+    }
+  }
+
+  // metal border (die street / fill)
+  if (detail && r3 > 0.7) {
+    stroke(50, 90, 80, 100 * a);
+    strokeWeight(Math.max(0.3, cell * 0.02));
+    noFill();
+    rect(x0, y0, cw, ch);
+  }
+}
+
+function drawOptics(cx, cy, fovR) {
+  // outside eyepiece black
+  noStroke();
+  fill(4, 6, 8);
+  // four rects around circle (faster than big inverse path for most cases)
+  // use even-odd with full rect + hole via destination-out
+  drawingContext.save();
+  drawingContext.beginPath();
+  drawingContext.rect(0, 0, width, height);
+  drawingContext.arc(cx, cy, fovR, 0, Math.PI * 2, true);
+  drawingContext.fillStyle = 'rgb(4,6,8)';
+  drawingContext.fill();
+  drawingContext.restore();
+
+  // brass / metal scope ring
+  noFill();
+  stroke(50, 70, 65, 220);
+  strokeWeight(Math.max(10, fovR * 0.045));
+  ellipse(cx, cy, fovR * 2, fovR * 2);
+  stroke(90, 120, 110, 120);
+  strokeWeight(2);
+  ellipse(cx, cy, fovR * 2 + 8, fovR * 2 + 8);
+
+  // chromatic fringe
+  stroke(255, 80, 60, 28);
+  strokeWeight(3);
+  ellipse(cx, cy, fovR * 2 - 6, fovR * 2 - 6);
+  stroke(60, 120, 255, 24);
+  ellipse(cx, cy, fovR * 2 + 2, fovR * 2 + 2);
+
+  // reticle
+  stroke(180, 255, 210, 50);
+  strokeWeight(1);
+  const tick = fovR * 0.08;
+  line(cx - fovR * 0.92, cy, cx - fovR * 0.72, cy);
+  line(cx + fovR * 0.72, cy, cx + fovR * 0.92, cy);
+  line(cx, cy - fovR * 0.92, cx, cy - fovR * 0.72);
+  line(cx, cy + fovR * 0.72, cx, cy + fovR * 0.92);
+  // center crosshair
+  stroke(180, 255, 210, 35);
+  line(cx - tick, cy, cx + tick, cy);
+  line(cx, cy - tick, cx, cy + tick);
+  noFill();
+  ellipse(cx, cy, tick * 2.2, tick * 2.2);
+
+  // focus breathing ring
+  const fb = 0.5 + 0.5 * Math.sin(focusPhase);
+  stroke(140, 255, 200, 12 + fb * 16);
+  strokeWeight(2);
+  ellipse(cx, cy, fovR * (1.7 + fb * 0.05), fovR * (1.7 + fb * 0.05));
+
+  // dust / hairs on eyepiece
+  push();
+  translate(cx, cy);
+  noStroke();
+  for (let i = 0; i < dust.length; i++) {
+    const d = dust[i];
+    d.rot += d.spin;
+    const rr = d.r * fovR;
+    const x = Math.cos(d.a) * rr;
+    const y = Math.sin(d.a) * rr;
+    push();
+    translate(x, y);
+    rotate(d.rot);
+    fill(200, 210, 200, 40);
+    ellipse(0, 0, d.s, d.s * 0.5);
+    pop();
+  }
+  pop();
+
+  // soft vignette inside FOV
+  drawingContext.save();
+  const grd = drawingContext.createRadialGradient(cx, cy, fovR * 0.35, cx, cy, fovR);
+  grd.addColorStop(0, 'rgba(0,0,0,0)');
+  grd.addColorStop(0.7, 'rgba(0,0,0,0)');
+  grd.addColorStop(1, 'rgba(0,8,6,0.55)');
+  drawingContext.fillStyle = grd;
+  drawingContext.beginPath();
+  drawingContext.arc(cx, cy, fovR, 0, Math.PI * 2);
+  drawingContext.fill();
+  drawingContext.restore();
+}
+
+/* ---------- input ---------- */
+
+function wireDrag() {
+  window.addEventListener('pointerdown', (ev) => {
+    if (ev.target && ev.target.closest && ev.target.closest('#touch-bar')) return;
+    dragging = true;
+    lastMX = ev.clientX;
+    lastMY = ev.clientY;
+  }, { passive: true });
+
+  window.addEventListener('pointermove', (ev) => {
+    if (!dragging) return;
+    const dx = ev.clientX - lastMX;
+    const dy = ev.clientY - lastMY;
+    lastMX = ev.clientX;
+    lastMY = ev.clientY;
+    // pan die (screen space)
+    targetPanX += dx;
+    targetPanY += dy;
+    ev.preventDefault();
+  }, { passive: false });
+
+  window.addEventListener('pointerup', () => { dragging = false; }, { passive: true });
+  window.addEventListener('pointercancel', () => { dragging = false; }, { passive: true });
+
+  window.addEventListener('wheel', (ev) => {
+    // scroll = zoom speed
+    speed = constrain(speed - ev.deltaY * 0.0008, 0.05, 2.5);
+    ev.preventDefault();
+  }, { passive: false });
+}
+
+function keyPressed() {
+  if (key === ' ') paused = !paused;
+  if (key === '[') speed = max(0.05, speed * 0.7);
+  if (key === ']') speed = min(2.5, speed * 1.35);
+  if (key === 'r' || key === 'R') {
+    logZ = 0;
+    targetPanX = panX = 0;
+    targetPanY = panY = 0;
+    speed = 0.42;
+    pulseBump();
+  }
+  if (key === 'h' || key === 'H') showHud = !showHud;
+}
+
+function pulseBump() {
+  // tiny focus flash via phase kick
+  focusPhase += 2;
+}
+
+function windowResized() {
+  resizeCanvas(windowWidth, windowHeight);
+  seedDust();
+}
+
+function wireTouchBar() {
+  const bar = document.getElementById('touch-bar');
+  if (!bar) return;
+  bar.querySelectorAll('button').forEach((btn) => {
+    btn.addEventListener('pointerdown', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const act = btn.getAttribute('data-act');
+      if (act === 'pause') paused = !paused;
+      if (act === 'faster') speed = min(2.5, speed * 1.4);
+      if (act === 'slower') speed = max(0.05, speed * 0.7);
+      if (act === 'reset') {
+        logZ = 0;
+        targetPanX = panX = 0;
+        targetPanY = panY = 0;
+        speed = 0.42;
+        pulseBump();
+      }
+    });
+  });
+}
+
+function touchStarted() {
+  if (event && event.target && event.target.closest && event.target.closest('#touch-bar')) return true;
+  return false;
+}
+function touchMoved() {
+  return false;
+}
+</script>
+</body>
+</html>

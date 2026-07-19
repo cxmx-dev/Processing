@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <title>3-explode</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      background: #00000a;
+      overflow: hidden;
+      font-family: system-ui, sans-serif;
+      touch-action: none;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    canvas { display: block; width: 100%; height: 100%; }
+    #touch-bar {
+      display: none;
+      position: fixed;
+      left: 8px; right: 8px; bottom: max(8px, env(safe-area-inset-bottom));
+      z-index: 10;
+      gap: 6px;
+      grid-template-columns: repeat(4, 1fr);
+    }
+    html.input-touch #touch-bar, html.device-phone #touch-bar, html.device-tablet #touch-bar {
+      display: grid;
+    }
+    #touch-bar button {
+      min-height: 44px;
+      border-radius: 8px;
+      border: 1px solid rgba(255, 200, 120, 0.4);
+      background: rgba(6, 4, 14, 0.88);
+      color: #ffe8c0;
+      font: 600 11px/1 system-ui, sans-serif;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    #touch-bar button:active { background: rgba(120, 60, 160, 0.4); }
+  </style>
+  <script src="device.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.11.3/lib/p5.min.js"></script>
+</head>
+<body>
+  <div id="touch-bar" aria-label="Touch controls">
+    <button type="button" data-act="pause">Pause</button>
+    <button type="button" data-act="boom">Boom</button>
+    <button type="button" data-act="clear">Clear</button>
+    <button type="button" data-act="reset">Reset</button>
+  </div>
+<script>
+/**
+ * 3-explode — spherical supernova shell, forever
+ * Reference: white-hot core + radial rays + wrinkled plasma membrane
+ * (gold / orange / red rim) + purple outer glow + horizontal lens flare.
+ *
+ * space pause · b / click boom · c clear · r reseed
+ */
+
+let stars = [];
+let blasts = [];
+let paused = false;
+let nextAutoAt = 0;
+let seedN = 0;
+
+function setup() {
+  createCanvas(windowWidth, windowHeight);
+  const p = window.DeviceProfile && DeviceProfile.get && DeviceProfile.get();
+  const dpr = (p && p.isPhone)
+    ? Math.min(window.devicePixelRatio || 1, 2)
+    : (window.devicePixelRatio || 1);
+  pixelDensity(dpr);
+  colorMode(RGB, 255, 255, 255, 255);
+  seedStars();
+  background(2, 0, 10);
+  spawnBlast(width * 0.5, height * 0.5, 1);
+  nextAutoAt = millis() + 3200;
+  wireTouchBar();
+}
+
+function seedStars() {
+  stars = [];
+  const n = Math.floor(Math.min(width, height) * 0.32 + 70);
+  for (let i = 0; i < n; i++) {
+    const roll = random();
+    let kind = 'white';
+    if (roll < 0.12) kind = 'blue';
+    else if (roll < 0.2) kind = 'pink';
+    stars.push({
+      x: random(width),
+      y: random(height),
+      r: random(0.4, 2.4),
+      base: random(80, 255),
+      tw: random(TWO_PI),
+      sp: random(0.006, 0.03),
+      kind
+    });
+  }
+}
+
+function draw() {
+  background(2, 0, 10);
+
+  drawStars();
+
+  if (!paused) {
+    for (let i = blasts.length - 1; i >= 0; i--) {
+      blasts[i].update();
+      if (blasts[i].dead) blasts.splice(i, 1);
+    }
+    if (millis() >= nextAutoAt || blasts.length === 0) {
+      autoBoom();
+    }
+  }
+
+  for (let i = 0; i < blasts.length; i++) {
+    blasts[i].display();
+  }
+
+  const prof = window.DeviceProfile && DeviceProfile.get && DeviceProfile.get();
+  if (!prof || !prof.isTouch) {
+    fill(255, 230, 200, 85);
+    noStroke();
+    textSize(11);
+    textAlign(LEFT, BASELINE);
+    text("space pause  ·  click / b boom  ·  c clear  ·  r reseed", 12, height - 14);
+  }
+}
+
+function drawStars() {
+  noStroke();
+  for (let i = 0; i < stars.length; i++) {
+    const s = stars[i];
+    const tw = 0.5 + 0.5 * sin(millis() * s.sp + s.tw);
+    const a = s.base * tw * 0.5;
+    if (s.kind === 'blue') fill(140, 180, 255, a);
+    else if (s.kind === 'pink') fill(255, 150, 220, a * 0.9);
+    else fill(255, 250, 240, a);
+    ellipse(s.x, s.y, s.r * tw, s.r * tw);
+  }
+}
+
+function autoBoom() {
+  let x = width * 0.5;
+  let y = height * 0.5;
+  let sc = random(0.9, 1.12);
+  if (random() < 0.2) {
+    x += randomGaussian() * width * 0.06;
+    y += randomGaussian() * height * 0.05;
+  }
+  spawnBlast(x, y, sc);
+  nextAutoAt = millis() + random(2800, 4000);
+}
+
+function spawnBlast(x, y, scale) {
+  seedN++;
+  blasts.push(new Supernova(x, y, scale, seedN * 7919));
+  while (blasts.length > 2) blasts.shift();
+}
+
+/**
+ * Spherical plasma shell with wrinkled membrane + star core + lens flare.
+ */
+class Supernova {
+  constructor(x, y, scale, nseed) {
+    this.x = x;
+    this.y = y;
+    this.scale = scale || 1;
+    this.t = 0;
+    this.speed = random(0.0048, 0.0065);
+    this.dead = false;
+    this.nseed = nseed || random(99999);
+    this.rot = random(TWO_PI);
+    this.spin = random(-0.15, 0.15);
+
+    // sample count for shell polyline
+    this.segs = 96;
+    // precompute base radial noise for filaments (stable wrinkles)
+    this.ridge = [];
+    for (let i = 0; i < this.segs; i++) {
+      const a = (i / this.segs) * TWO_PI;
+      this.ridge.push({
+        a,
+        n1: noise(Math.cos(a) * 1.2 + this.nseed, Math.sin(a) * 1.2),
+        n2: noise(Math.cos(a * 2) * 2.1 + this.nseed * 0.3, Math.sin(a * 2) * 2.1),
+        n3: noise(i * 0.17 + this.nseed)
+      });
+    }
+
+    // chord pairs for inner webbing
+    this.chords = [];
+    const chordN = 48;
+    for (let i = 0; i < chordN; i++) {
+      const i0 = Math.floor(random(this.segs));
+      const span = 4 + Math.floor(random(18));
+      this.chords.push({ i0, i1: (i0 + span) % this.segs, deep: random(0.55, 0.92) });
+    }
+  }
+
+  update() {
+    this.t += this.speed;
+    this.rot += this.spin * 0.004;
+    if (this.t >= 1) this.dead = true;
+  }
+
+  envelope() {
+    const t = this.t;
+    if (t < 0.1) return easeOutCubic(t / 0.1);
+    if (t < 0.5) return 1;
+    return 1 - easeInCubic((t - 0.5) / 0.5);
+  }
+
+  radius() {
+    const grow = easeOutCubic(constrain(this.t / 0.6, 0, 1));
+    const base = Math.min(width, height) * 0.28 * this.scale;
+    return base * (0.2 + grow * 0.95);
+  }
+
+  shellPoint(i, R, inflate) {
+    const r = this.ridge[i];
+    const wrinkle =
+      1 +
+      (r.n1 - 0.5) * 0.22 +
+      (r.n2 - 0.5) * 0.12 +
+      (r.n3 - 0.5) * 0.08 +
+      0.04 * sin(this.t * 8 + r.a * 5);
+    const rad = R * wrinkle * inflate;
+    return {
+      x: cos(r.a) * rad,
+      y: sin(r.a) * rad,
+      a: r.a,
+      wrinkle
+    };
+  }
+
+  display() {
+    const env = this.envelope();
+    if (env <= 0.01) return;
+
+    const R = this.radius();
+    const nOff = this.nseed * 0.001 + this.t * 0.9;
+
+    push();
+    translate(this.x, this.y);
+    rotate(this.rot);
+
+    // --- soft purple / blue outer nebula ---
+    noStroke();
+    for (let i = 5; i >= 1; i--) {
+      const f = i / 5;
+      fill(120, 60, 220, 8 * env * f);
+      ellipse(0, 0, R * (2.4 + i * 0.35), R * (2.4 + i * 0.35));
+      fill(80, 100, 255, 5 * env * f);
+      ellipse(0, 0, R * (2.1 + i * 0.25), R * (2.1 + i * 0.25));
+    }
+
+    // --- faint filled membrane volume ---
+    this.drawShellFill(R, env, 1.0, 18);
+    this.drawShellFill(R, env, 0.88, 12);
+
+    // --- inner filament web ---
+    this.drawWeb(R, env);
+
+    // --- multiple wrinkled rim strokes (gold → orange → red) ---
+    this.drawRim(R, env, 1.02, 255, 200, 80, 3.2, 90);
+    this.drawRim(R, env, 1.0, 255, 140, 40, 2.4, 110);
+    this.drawRim(R, env, 0.97, 255, 60, 40, 1.6, 80);
+    this.drawRim(R, env, 0.93, 200, 80, 180, 1.2, 40);
+
+    // thin secondary membrane ridges inside
+    this.drawInnerRidges(R, env, nOff);
+
+    // --- radial light rays from core ---
+    this.drawRays(R, env);
+
+    // --- white-hot core ---
+    this.drawCore(R, env);
+
+    // --- horizontal lens flare ---
+    this.drawFlare(R, env);
+
+    pop();
+  }
+
+  drawShellFill(R, env, inflate, alpha) {
+    noStroke();
+    fill(255, 180, 100, alpha * env * 0.35);
+    beginShape();
+    for (let i = 0; i < this.segs; i++) {
+      const p = this.shellPoint(i, R, inflate);
+      vertex(p.x, p.y);
+    }
+    endShape(CLOSE);
+  }
+
+  drawRim(R, env, inflate, cr, cg, cb, weight, alpha) {
+    noFill();
+    stroke(cr, cg, cb, alpha * env);
+    strokeWeight(weight);
+    beginShape();
+    for (let i = 0; i <= this.segs; i++) {
+      const p = this.shellPoint(i % this.segs, R, inflate);
+      curveVertex(p.x, p.y);
+    }
+    // close smoothly
+    for (let i = 0; i < 3; i++) {
+      const p = this.shellPoint(i, R, inflate);
+      curveVertex(p.x, p.y);
+    }
+    endShape();
+  }
+
+  drawWeb(R, env) {
+    strokeWeight(1);
+    for (let i = 0; i < this.chords.length; i++) {
+      const c = this.chords[i];
+      const a = this.shellPoint(c.i0, R, c.deep);
+      const b = this.shellPoint(c.i1, R, c.deep);
+      // mid bulge toward a shared noise point
+      const mx = (a.x + b.x) * 0.5 * 0.92;
+      const my = (a.y + b.y) * 0.5 * 0.92;
+      stroke(255, 160, 80, 28 * env);
+      noFill();
+      beginShape();
+      vertex(a.x, a.y);
+      quadraticVertex(mx, my, b.x, b.y);
+      endShape();
+    }
+
+    // radial spokes (faint membrane folds)
+    for (let i = 0; i < this.segs; i += 3) {
+      const outer = this.shellPoint(i, R, 1);
+      const inner = this.shellPoint(i, R, 0.35 + 0.2 * this.ridge[i].n1);
+      stroke(255, 200, 120, 18 * env);
+      line(inner.x, inner.y, outer.x, outer.y);
+    }
+  }
+
+  drawInnerRidges(R, env, nOff) {
+    noFill();
+    for (let ring = 0; ring < 4; ring++) {
+      const inflate = 0.45 + ring * 0.12;
+      stroke(255, 170 + ring * 15, 90, (22 - ring * 3) * env);
+      strokeWeight(1 + ring * 0.2);
+      beginShape();
+      for (let i = 0; i <= this.segs; i++) {
+        const idx = i % this.segs;
+        const extra = 1 + 0.06 * sin(nOff * 3 + idx * 0.4 + ring);
+        const p = this.shellPoint(idx, R, inflate * extra);
+        curveVertex(p.x, p.y);
+      }
+      endShape();
+    }
+  }
+
+  drawRays(R, env) {
+    const rayN = 36;
+    for (let i = 0; i < rayN; i++) {
+      const a = (i / rayN) * TWO_PI + this.nseed;
+      const len = R * (0.35 + 0.55 * noise(i * 0.3, this.t));
+      const w = 1.2 + 2.5 * noise(i * 0.5 + 2);
+      const bright = 40 + 80 * noise(i * 0.2, this.t * 2);
+      stroke(255, 245, 220, bright * env);
+      strokeWeight(w);
+      line(0, 0, cos(a) * len, sin(a) * len);
+    }
+    // softer longer wash rays
+    for (let i = 0; i < 16; i++) {
+      const a = (i / 16) * TWO_PI + 0.1;
+      stroke(255, 220, 160, 18 * env);
+      strokeWeight(6);
+      line(0, 0, cos(a) * R * 0.95, sin(a) * R * 0.95);
+    }
+  }
+
+  drawCore(R, env) {
+    noStroke();
+    // warm bloom
+    for (let i = 6; i >= 1; i--) {
+      const f = i / 6;
+      fill(255, 230 - i * 10, 160 - i * 8, 30 * env * f);
+      ellipse(0, 0, R * 0.7 * f, R * 0.7 * f);
+    }
+    // white core
+    fill(255, 255, 250, 200 * env);
+    ellipse(0, 0, R * 0.28, R * 0.28);
+    fill(255, 255, 255, 240 * env);
+    ellipse(0, 0, R * 0.14, R * 0.14);
+  }
+
+  drawFlare(R, env) {
+    noStroke();
+    // wide soft bar
+    for (let i = 5; i >= 1; i--) {
+      const h = R * (0.06 + i * 0.04);
+      const w = Math.max(width, height) * (0.55 + i * 0.08);
+      fill(255, 200, 160, 8 * env * (i / 5));
+      ellipse(0, 0, w, h);
+    }
+    // bright core streak
+    fill(255, 240, 210, 70 * env);
+    ellipse(0, 0, Math.max(width, height) * 0.7, R * 0.05);
+    fill(255, 255, 255, 110 * env);
+    ellipse(0, 0, Math.max(width, height) * 0.55, R * 0.018);
+
+    // faint purple flare tips
+    fill(180, 100, 255, 25 * env);
+    ellipse(-R * 1.6, 0, R * 0.9, R * 0.08);
+    ellipse(R * 1.6, 0, R * 0.9, R * 0.08);
+  }
+}
+
+function easeOutCubic(x) {
+  return 1 - Math.pow(1 - x, 3);
+}
+function easeInCubic(x) {
+  return x * x * x;
+}
+
+function mousePressed() {
+  if (event && event.target && event.target.closest && event.target.closest('#touch-bar')) return;
+  spawnBlast(mouseX, mouseY, random(0.8, 1.15));
+  nextAutoAt = millis() + random(2800, 3800);
+}
+
+function touchStarted() {
+  if (event && event.target && event.target.closest && event.target.closest('#touch-bar')) {
+    return false;
+  }
+  if (touches && touches.length) {
+    spawnBlast(touches[0].x, touches[0].y, random(0.8, 1.15));
+    nextAutoAt = millis() + random(2800, 3800);
+  }
+  return false;
+}
+
+function keyPressed() {
+  if (key === ' ') paused = !paused;
+  if (key === 'b' || key === 'B') {
+    spawnBlast(width * 0.5, height * 0.5, 1.05);
+    nextAutoAt = millis() + 3200;
+  }
+  if (key === 'c' || key === 'C') {
+    blasts = [];
+    background(2, 0, 10);
+  }
+  if (key === 'r' || key === 'R') {
+    blasts = [];
+    seedStars();
+    background(2, 0, 10);
+    spawnBlast(width * 0.5, height * 0.5, 1);
+    nextAutoAt = millis() + 3200;
+  }
+}
+
+function windowResized() {
+  resizeCanvas(windowWidth, windowHeight);
+  seedStars();
+  background(2, 0, 10);
+}
+
+function wireTouchBar() {
+  const bar = document.getElementById('touch-bar');
+  if (!bar) return;
+  bar.querySelectorAll('button').forEach((btn) => {
+    btn.addEventListener('pointerdown', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const act = btn.getAttribute('data-act');
+      if (act === 'pause') paused = !paused;
+      if (act === 'boom') {
+        spawnBlast(width * 0.5, height * 0.5, 1.05);
+        nextAutoAt = millis() + 3200;
+      }
+      if (act === 'clear') {
+        blasts = [];
+        background(2, 0, 10);
+      }
+      if (act === 'reset') {
+        blasts = [];
+        seedStars();
+        background(2, 0, 10);
+        spawnBlast(width * 0.5, height * 0.5, 1);
+        nextAutoAt = millis() + 3200;
+      }
+    });
+  });
+}
+</script>
+</body>
+</html>

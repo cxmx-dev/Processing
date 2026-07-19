@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <title>mirrorcube</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      background: #000000;
+      overflow: hidden;
+      font-family: system-ui, sans-serif;
+      touch-action: none;
+      -webkit-user-select: none;
+      user-select: none;
+      cursor: grab;
+    }
+    html.dragging, html.dragging body { cursor: grabbing; }
+    canvas { display: block; width: 100%; height: 100%; }
+    #hud {
+      position: fixed;
+      left: 12px;
+      bottom: max(10px, env(safe-area-inset-bottom));
+      z-index: 5;
+      color: rgba(200, 220, 255, 0.4);
+      font: 11px/1.35 system-ui, sans-serif;
+      pointer-events: none;
+      text-shadow: 0 1px 4px rgba(0,0,0,0.9);
+    }
+    #hud.hidden { display: none; }
+    #touch-bar {
+      display: none;
+      position: fixed;
+      left: 8px; right: 8px;
+      bottom: max(8px, env(safe-area-inset-bottom));
+      z-index: 10;
+      gap: 6px;
+      grid-template-columns: repeat(4, 1fr);
+    }
+    html.input-touch #touch-bar,
+    html.device-phone #touch-bar,
+    html.device-tablet #touch-bar {
+      display: grid;
+    }
+    html.input-touch #hud,
+    html.device-phone #hud,
+    html.device-tablet #hud {
+      bottom: 60px;
+    }
+    #touch-bar button {
+      min-height: 44px;
+      border-radius: 8px;
+      border: 1px solid rgba(140, 180, 255, 0.35);
+      background: rgba(8, 10, 18, 0.9);
+      color: #d0e4ff;
+      font: 600 11px/1 system-ui, sans-serif;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    #touch-bar button:active { background: rgba(60, 90, 160, 0.45); }
+  </style>
+  <script src="device.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.11.3/lib/p5.min.js"></script>
+</head>
+<body>
+  <div id="hud">drag orbit · space auto-spin · r reset · h hud</div>
+  <div id="touch-bar" aria-label="Touch controls">
+    <button type="button" data-act="spin">Spin</button>
+    <button type="button" data-act="reset">Reset</button>
+    <button type="button" data-act="pulse">Flash</button>
+    <button type="button" data-act="hud">Hud</button>
+  </div>
+<script>
+/**
+ * mirrorcube — mirrored cube on pure black
+ *
+ * Chrome / mirror faces with procedural environment reflection
+ * (fresnel, sharp speculars, soft rim). Auto-spin + drag orbit.
+ *
+ * drag orbit · space auto-spin · r reset · h hud · p flash
+ */
+
+const V_SRC = `
+precision mediump float;
+attribute vec3 aPosition;
+attribute vec3 aNormal;
+varying vec3 vNormal;
+varying vec3 vViewPos;
+varying vec3 vWorldN;
+uniform mat4 uModelViewMatrix;
+uniform mat4 uProjectionMatrix;
+uniform mat3 uNormalMatrix;
+void main() {
+  vec4 viewPos = uModelViewMatrix * vec4(aPosition, 1.0);
+  vViewPos = viewPos.xyz;
+  vNormal = normalize(uNormalMatrix * aNormal);
+  // approximate world-ish normal for env (view-space is fine for chrome)
+  vWorldN = vNormal;
+  gl_Position = uProjectionMatrix * viewPos;
+}
+`;
+
+const F_SRC = `
+precision mediump float;
+varying vec3 vNormal;
+varying vec3 vViewPos;
+varying vec3 vWorldN;
+uniform float uTime;
+uniform float uFlash;
+uniform vec2 uRes;
+
+// hash for env grain
+float hash(vec2 p) {
+  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+// procedural environment from reflection vector
+vec3 envMap(vec3 r) {
+  r = normalize(r);
+
+  // pure black void base
+  vec3 col = vec3(0.0);
+
+  // soft horizon band (very dark grey)
+  float horizon = smoothstep(0.15, -0.05, r.y) * smoothstep(-0.9, -0.2, r.y);
+  col += vec3(0.04, 0.045, 0.055) * horizon;
+
+  // cold overhead wash
+  float zenith = pow(max(r.y, 0.0), 2.0);
+  col += vec3(0.02, 0.03, 0.06) * zenith;
+
+  // moving light streaks (studio softboxes)
+  float t = uTime * 0.25;
+  vec3 l1 = normalize(vec3(sin(t), 0.55, cos(t)));
+  vec3 l2 = normalize(vec3(sin(t * 0.7 + 2.1), 0.2, cos(t * 0.7 + 2.1)));
+  vec3 l3 = normalize(vec3(cos(t * 0.4), 0.85, sin(t * 0.4 + 1.0)));
+
+  float s1 = pow(max(dot(r, l1), 0.0), 80.0);
+  float s2 = pow(max(dot(r, l2), 0.0), 120.0);
+  float s3 = pow(max(dot(r, l3), 0.0), 40.0);
+
+  col += vec3(0.95, 0.97, 1.0) * s1 * 1.4;
+  col += vec3(0.7, 0.85, 1.0) * s2 * 0.9;
+  col += vec3(1.0, 0.92, 0.85) * s3 * 0.7;
+
+  // elongated softbox strip
+  float strip = exp(-pow(r.y - 0.35, 2.0) * 40.0) * exp(-pow(fract(atan(r.z, r.x) / 6.28318 + t * 0.05) - 0.5, 2.0) * 80.0);
+  col += vec3(0.85, 0.9, 1.0) * strip * 0.55;
+
+  // tiny star-like env sparks
+  float sp = hash(floor(r.xy * 40.0 + r.z * 12.0));
+  if (sp > 0.97) {
+    col += vec3(0.6) * (sp - 0.97) * 12.0 * max(r.y + 0.3, 0.0);
+  }
+
+  // flash pulse
+  col += vec3(0.15, 0.18, 0.22) * uFlash;
+
+  return col;
+}
+
+void main() {
+  vec3 N = normalize(vNormal);
+  vec3 V = normalize(-vViewPos);
+  // double-sided feel if normal flips
+  if (dot(N, V) < 0.0) N = -N;
+
+  vec3 R = reflect(-V, N);
+
+  // mirror env
+  vec3 refl = envMap(R);
+
+  // fresnel: more mirror at grazing angles
+  float ndv = max(dot(N, V), 0.0);
+  float fres = pow(1.0 - ndv, 4.0);
+  float mixAmt = 0.72 + 0.28 * fres;
+
+  // dark chrome base (almost black metal)
+  vec3 base = vec3(0.02, 0.022, 0.028);
+  vec3 col = mix(base, refl, mixAmt);
+
+  // sharp contact speculars from key lights
+  vec3 L = normalize(vec3(0.4, 0.8, 0.5));
+  vec3 H = normalize(L + V);
+  float spec = pow(max(dot(N, H), 0.0), 220.0);
+  col += vec3(1.0) * spec * 0.85;
+
+  // edge rim
+  float rim = pow(1.0 - ndv, 3.0);
+  col += vec3(0.25, 0.35, 0.5) * rim * 0.25;
+
+  // mild face separation: slightly darker by normal axes (cube structure)
+  float face = abs(N.x) * 0.04 + abs(N.y) * 0.02 + abs(N.z) * 0.03;
+  col *= 1.0 - face;
+
+  // tone
+  col = col / (1.0 + col * 0.35);
+  col = pow(max(col, 0.0), vec3(0.95));
+
+  gl_FragColor = vec4(col, 1.0);
+}
+`;
+
+let sh;
+let autoSpin = true;
+let showHud = true;
+let flash = 0;
+let isPhone = false;
+
+// orbit camera
+let yaw = 0.55;
+let pitch = 0.35;
+let targetYaw = 0.55;
+let targetPitch = 0.35;
+let dist = 480;
+let targetDist = 480;
+let dragging = false;
+let lastX = 0;
+let lastY = 0;
+let velYaw = 0;
+let velPitch = 0;
+let cubeSize = 180;
+let spinT = 0;
+
+function setup() {
+  const prof = window.DeviceProfile && DeviceProfile.get && DeviceProfile.get();
+  isPhone = !!(prof && prof.isPhone);
+
+  let dpr = window.devicePixelRatio || 1;
+  if (isPhone) dpr = Math.min(dpr, 1.5);
+  else dpr = Math.min(dpr, 2);
+
+  createCanvas(windowWidth, windowHeight, WEBGL);
+  pixelDensity(dpr);
+  setAttributes('antialias', true);
+  frameRate(60);
+
+  sh = createShader(V_SRC, F_SRC);
+  cubeSize = Math.min(width, height) * 0.28;
+  dist = cubeSize * 2.7;
+  targetDist = dist;
+
+  noStroke();
+  wireTouchBar();
+  wirePointer();
+}
+
+function draw() {
+  const dt = deltaTime / 1000;
+  if (flash > 0) flash *= 0.94;
+
+  if (autoSpin && !dragging) {
+    targetYaw += 0.45 * dt;
+    spinT += dt;
+  }
+
+  if (!dragging) {
+    targetYaw += velYaw;
+    targetPitch += velPitch;
+    velYaw *= 0.92;
+    velPitch *= 0.92;
+  }
+
+  yaw = lerp(yaw, targetYaw, 0.18);
+  pitch = lerp(pitch, targetPitch, 0.18);
+  pitch = constrain(pitch, -1.2, 1.2);
+  targetPitch = constrain(targetPitch, -1.2, 1.2);
+  dist = lerp(dist, targetDist, 0.12);
+
+  // pure black void
+  background(0);
+
+  // orbit camera around origin
+  const cx = dist * Math.cos(pitch) * Math.sin(yaw);
+  const cy = dist * Math.sin(pitch);
+  const cz = dist * Math.cos(pitch) * Math.cos(yaw);
+  camera(cx, cy, cz, 0, 0, 0, 0, 1, 0);
+  perspective(PI / 3.0, width / Math.max(height, 1), 1, dist * 10);
+
+  // mirror cube
+  push();
+  // idle micro-tilt for life
+  rotateY(spinT * 0.15);
+  rotateX(Math.sin(spinT * 0.35) * 0.08);
+  rotateZ(Math.cos(spinT * 0.22) * 0.05);
+
+  shader(sh);
+  sh.setUniform('uTime', millis() / 1000);
+  sh.setUniform('uFlash', flash);
+  sh.setUniform('uRes', [width, height]);
+
+  box(cubeSize);
+
+  resetShader();
+  pop();
+
+  // thin edge highlight wire (barely there — sells solid cube)
+  push();
+  rotateY(spinT * 0.15);
+  rotateX(Math.sin(spinT * 0.35) * 0.08);
+  rotateZ(Math.cos(spinT * 0.22) * 0.05);
+  noFill();
+  stroke(180, 200, 255, 28);
+  strokeWeight(1);
+  box(cubeSize * 1.002);
+  noStroke();
+  pop();
+
+  const hud = document.getElementById('hud');
+  if (hud) hud.classList.toggle('hidden', !showHud);
+}
+
+function wirePointer() {
+  window.addEventListener('pointerdown', (ev) => {
+    if (ev.target && ev.target.closest && ev.target.closest('#touch-bar')) return;
+    dragging = true;
+    document.documentElement.classList.add('dragging');
+    lastX = ev.clientX;
+    lastY = ev.clientY;
+    velYaw = 0;
+    velPitch = 0;
+  }, { passive: true });
+
+  window.addEventListener('pointermove', (ev) => {
+    if (!dragging) return;
+    const dx = ev.clientX - lastX;
+    const dy = ev.clientY - lastY;
+    lastX = ev.clientX;
+    lastY = ev.clientY;
+    targetYaw -= dx * 0.005;
+    targetPitch += dy * 0.005;
+    velYaw = -dx * 0.0015;
+    velPitch = dy * 0.0015;
+    ev.preventDefault();
+  }, { passive: false });
+
+  const up = () => {
+    dragging = false;
+    document.documentElement.classList.remove('dragging');
+  };
+  window.addEventListener('pointerup', up, { passive: true });
+  window.addEventListener('pointercancel', up, { passive: true });
+
+  window.addEventListener('wheel', (ev) => {
+    targetDist = constrain(targetDist + ev.deltaY * 0.35, cubeSize * 1.4, cubeSize * 6);
+    ev.preventDefault();
+  }, { passive: false });
+}
+
+function keyPressed() {
+  if (key === ' ') autoSpin = !autoSpin;
+  if (key === 'r' || key === 'R') doReset();
+  if (key === 'h' || key === 'H') showHud = !showHud;
+  if (key === 'p' || key === 'P') flash = 1;
+}
+
+function doReset() {
+  targetYaw = 0.55;
+  targetPitch = 0.35;
+  yaw = targetYaw;
+  pitch = targetPitch;
+  targetDist = cubeSize * 2.7;
+  velYaw = 0;
+  velPitch = 0;
+  flash = 0;
+  spinT = 0;
+}
+
+function windowResized() {
+  let dpr = window.devicePixelRatio || 1;
+  if (isPhone) dpr = Math.min(dpr, 1.5);
+  else dpr = Math.min(dpr, 2);
+  pixelDensity(dpr);
+  resizeCanvas(windowWidth, windowHeight);
+  cubeSize = Math.min(width, height) * 0.28;
+  targetDist = constrain(targetDist, cubeSize * 1.4, cubeSize * 6);
+}
+
+function wireTouchBar() {
+  const bar = document.getElementById('touch-bar');
+  if (!bar) return;
+  bar.querySelectorAll('button').forEach((btn) => {
+    btn.addEventListener('pointerdown', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const act = btn.getAttribute('data-act');
+      if (act === 'spin') autoSpin = !autoSpin;
+      if (act === 'reset') doReset();
+      if (act === 'pulse') flash = 1;
+      if (act === 'hud') showHud = !showHud;
+    });
+  });
+}
+
+function touchStarted() {
+  if (event && event.target && event.target.closest && event.target.closest('#touch-bar')) return true;
+  return false;
+}
+function touchMoved() {
+  return false;
+}
+</script>
+</body>
+</html>
