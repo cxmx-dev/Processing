@@ -5,7 +5,26 @@
  *
  * Hub rule: every browser-facing Repos demo (static/vite/p5) must use this
  * (or equivalent) so play works on whatever device opens the page.
+ *
+ * Load this script BEFORE p5.js. It also blocks p5's unused deviceorientation /
+ * devicemotion listeners (browser deprecation console noise). These sketches
+ * use pointer/media queries only — not the motion sensors.
  */
+(function () {
+  'use strict';
+  if (typeof EventTarget === 'undefined' || !EventTarget.prototype.addEventListener) return;
+  var blocked = {
+    deviceorientation: 1,
+    devicemotion: 1,
+    deviceorientationabsolute: 1
+  };
+  var orig = EventTarget.prototype.addEventListener;
+  EventTarget.prototype.addEventListener = function (type, listener, options) {
+    if (blocked[String(type).toLowerCase()]) return;
+    return orig.call(this, type, listener, options);
+  };
+})();
+
 (function (global) {
   'use strict';
 
