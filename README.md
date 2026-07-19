@@ -79,7 +79,7 @@ Machine-specific paths → `USER-NOTES.md` (local only, gitignored).
 | `2-Aus` | `p5js/2-Aus` | Seamless skysphere — left/right edge bake + pole soften |
 | `chipScope` | `p5js/chipScope` | Microscope dive into a microchip — infinite hierarchical zoom |
 | `mirrorcube` | `p5js/mirrorcube` | Chrome cube on pure black; orbit + auto-spin; **no cursor** |
-| `mirrorball` | `p5js/mirrorball` | Chrome orb on pure black; world-fixed env so orbit reads on a sphere; **no cursor** |
+| `mirrorball` | `p5js/mirrorball` | Chrome orb on pure black; world-fixed env so orbit reads on a sphere; **cursor forced off** (`noCursor` + CSS `!important`) |
 
 ### Controls (common)
 
@@ -97,6 +97,12 @@ Paired Processing sketches: **space** pause · **h** hex · **r** reseed · **cl
 - Mirror **sphere** env maps need world-fixed lights (not view-locked) or camera orbit looks dead; a cube’s faces hide that issue.
 
 ## Version History
+
+71826 9:20:14:30 PM CST  
+• `update .mds`: `mirrorball` cursor fully suppressed (`noCursor()`, CSS `cursor: none !important` on page + canvas). `USER-NOTES.md` lines 1–6 still User-owned on sync.
+
+71826 9:09:34:47 PM CST  
+• `update .mds`: no new sketches; reaffirm dual-doc — `USER-NOTES.md` top block (lines 1–6) is User-owned and must not be overwritten on doc sync; session notes refreshed.
 
 71826 9:03:56:28 PM CST  
 • `update .mds`: add `mirrorball` (chrome orb; world-fixed studio env so drag orbit is visible); `mirrorcube` / `mirrorball` hide system cursor; `device.js` blocks p5 motion/orientation sensors (deprecation console noise) across all p5 sketches; note sphere vs cube orbit readability.

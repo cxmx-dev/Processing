@@ -32,9 +32,10 @@ Scratchpad for sketch ideas, moods, and half-baked directions. No polish require
 - **Nebula / sky:** `Australis` (FBM shader; CPU ellipse path was choppy at 1440p), `2-Australis` (photo + skysphere free-look, data-URI CORS fix), `1-Aus` (pure p5 skysphere, 3× spin), `2-Aus` (seamless plate bake).
 - **chipScope:** microscope dive; fixed `scale` param shadowing p5.`scale()`.
 - **mirrorcube:** chrome cube; no ground disc; cursor hidden.
-- **mirrorball:** chrome orb; drag “felt broken” because view-locked env is orbit-invariant on a sphere — fixed with world-fixed studio env (`uYaw`/`uPitch`); cursor hidden.
+- **mirrorball:** chrome orb; drag “felt broken” because view-locked env is orbit-invariant on a sphere — fixed with world-fixed studio env (`uYaw`/`uPitch`); cursor forced off (`noCursor` + CSS `!important`).
 - **device.js:** block `deviceorientation` / `devicemotion` before p5 loads (all sketches).
-- `update .mds` (PM) — catalog + mirror family + sensor guard docs.
+- **USER-NOTES:** lines 1–6 protected (hub `start.ps1` / `start-all.ps1` block) — agents must not overwrite.
+- `update .mds` (PM) — catalog + mirror family + sensor guard; header preserved; cursor note for `mirrorball`.
 
 ### 71026
 - Stood up playground; renamed off hyphens (`hex-cloud` → `hexCloud`) for Processing.
