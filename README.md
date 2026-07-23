@@ -79,11 +79,18 @@ Machine-specific paths → `USER-NOTES.md` (local only, gitignored).
 | `2-Aus` | `p5js/2-Aus` | Seamless skysphere — left/right edge bake + pole soften |
 | `chipScope` | `p5js/chipScope` | Microscope dive into a microchip — infinite hierarchical zoom |
 | `mirrorcube` | `p5js/mirrorcube` | Chrome cube on pure black; orbit + auto-spin; **no cursor** |
-| `mirrorball` | `p5js/mirrorball` | Chrome orb on pure black; world-fixed env so orbit reads on a sphere; **cursor forced off** (`noCursor` + CSS `!important`) |
+| `mirrorball` | `p5js/mirrorball` | Chrome orb on pure black; world-fixed env; **cursor forced off** |
+| `mirrorballcube` | `p5js/mirrorballcube` | Chrome orb + cube; mutual reflections; **T** swaps center; CCW XZ revolve |
+| `mirrorfire` | `p5js/mirrorfire` | Chrome ball/cube inside **fire room** (walls/floor/ceiling flames) |
+| `mirrorfireorbcube-sky-box` | `p5js/mirrorfireorbcube-sky-box` | Orb+cube in fire **sky-box**; mutual + fire reflections; **T** swap; **[ ]** cam XZ |
+| `mirrorfireorbcube-sky-sphere` | `p5js/mirrorfireorbcube-sky-sphere` | Same + fire **sky-sphere** shell; multi-panel lat/lon fire tiles; thin seams |
+| `multifireorbcube` | `p5js/multifireorbcube` | Dense **48×32** fire panels; **[ ]** cam yaw accelerates **+1×/s** hold |
+| `multigasorbcube` | `p5js/multigasorbcube` | Inside gas giant — banded plumes/storms (not fire); same dual chrome + controls |
+| `saturnorbcube` | `p5js/saturnorbcube` | Inside **Saturn** — continuous butterscotch belts (no hard panel grid) |
 
 ### Controls (common)
 
-Many sketches share **space** pause · **r** reset · **h** HUD · **drag** pan/orbit. Sketch-specific keys are noted in each `index.html` header comment (e.g. `chipScope` **[ ]** speed, `mirrorcube` / `mirrorball` scroll dolly).
+Many sketches share **space** pause · **r** reset · **h** HUD · **drag** pan/orbit. Sketch-specific keys are noted in each `index.html` header comment (e.g. `chipScope` **[ ]** speed; fire/gas/Saturn dual-chrome: **t** swap center, **[ ]** camera XZ yaw).
 
 Paired Processing sketches: **space** pause · **h** hex · **r** reseed · **click** spawn (`template`) · **p** / **[ ]** rings (`hexCloud`).
 
@@ -95,8 +102,12 @@ Paired Processing sketches: **space** pause · **h** hex · **r** reseed · **cl
 - No build step required.
 - Avoid shadowing p5 globals with parameter names (e.g. do not name a param `scale` — use `zoom`).
 - Mirror **sphere** env maps need world-fixed lights (not view-locked) or camera orbit looks dead; a cube’s faces hide that issue.
+- Fire/gas dual-chrome family: **T** swaps which body is center; object revolve is CCW in **XZ**; **[ ]** orbit camera on XZ (multifire+ : hold ramps **+1× base speed per second**).
 
 ## Version History
+
+72026 10:46:19:88 AM CST  
+• `update .mds`: catalog dual-chrome fire/gas/Saturn line — `mirrorballcube`, `mirrorfire`, `mirrorfireorbcube-sky-box` / `-sky-sphere`, `multifireorbcube` (dense panels + accel cam), `multigasorbcube`, `saturnorbcube` (continuous Saturn belts; was `nusatorbcube`). Controls notes for **t** / **[ ]**. `USER-NOTES.md` lines 1–6 preserved.
 
 71826 9:20:14:30 PM CST  
 • `update .mds`: `mirrorball` cursor fully suppressed (`noCursor()`, CSS `cursor: none !important` on page + canvas). `USER-NOTES.md` lines 1–6 still User-owned on sync.

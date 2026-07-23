@@ -12,6 +12,7 @@ Scratchpad for sketch ideas, moods, and half-baked directions. No polish require
 - **Australis** family — nebula still / generative H-alpha / skysphere free-look (seamless bake on `2-Aus`).
 - **chipScope** — infinite microscope zoom into hierarchical die layers.
 - **mirrorcube** / **mirrorball** — chrome cube + orb, pure black void, orbit camera (no cursor).
+- **mirrorballcube** + **mirrorfire*** / **multi*** / **saturnorbcube** — dual chrome in fire or gas shells (box vs sphere env; Saturn continuous belts).
 - Sound-reactive hex bloom (later — mic / FFT).
 - Slow ink trails / plotter-friendly line exports.
 - Grid → chaos morph (lerp ordered lattice into noise).
@@ -25,6 +26,15 @@ Scratchpad for sketch ideas, moods, and half-baked directions. No polish require
 - [ ] True equirectangular 360 plate would map cleaner on skyspheres than flat still
 
 ## Sessions
+
+### 71926–72026
+- **mirrorballcube:** chrome orb + cube mutual reflections; **T** center swap; CCW XZ revolve.
+- **mirrorfire:** fire room + chrome; then **mirrorfireorbcube** dual chrome in fire.
+- Split fire dual: **`mirrorfireorbcube-sky-box`** (6 walls) + **`mirrorfireorbcube-sky-sphere`** (shell; dense panels; thin seams).
+- **[ ]** cam XZ on both fire orbcube variants; **multifireorbcube** = 48×32 panels + cam accel **+1×/s**.
+- **multigasorbcube** — gas-planet plumes (not fire).
+- **satorbcube** → **saturnorbcube** (renamed from `nusatorbcube`) — continuous Saturn belts, no panel grid.
+- `update .mds` 72026 AM — README catalog + notes/USER-NOTES.
 
 ### 71826
 - Big p5-only expansion (no new Processing pairs this session).
