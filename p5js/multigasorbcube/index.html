@@ -1,0 +1,750 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <title>multigasorbcube</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body, canvas, * { cursor: none !important; }
+    html, body {
+      background: #06040c;
+      overflow: hidden;
+      font-family: system-ui, sans-serif;
+      touch-action: none;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+    #hud {
+      position: fixed;
+      left: 12px;
+      bottom: max(10px, env(safe-area-inset-bottom));
+      z-index: 5;
+      color: rgba(210, 200, 255, 0.5);
+      font: 11px/1.35 system-ui, sans-serif;
+      pointer-events: none;
+      text-shadow: 0 1px 4px rgba(0,0,0,0.9);
+    }
+    #hud.hidden { display: none; }
+    #touch-bar {
+      display: none;
+      position: fixed;
+      left: 8px; right: 8px;
+      bottom: max(8px, env(safe-area-inset-bottom));
+      z-index: 10;
+      gap: 6px;
+      grid-template-columns: repeat(4, 1fr);
+    }
+    html.input-touch #touch-bar,
+    html.device-phone #touch-bar,
+    html.device-tablet #touch-bar {
+      display: grid;
+    }
+    html.input-touch #hud,
+    html.device-phone #hud,
+    html.device-tablet #hud {
+      bottom: 60px;
+    }
+    #touch-bar button {
+      min-height: 44px;
+      border-radius: 8px;
+      border: 1px solid rgba(160, 150, 220, 0.4);
+      background: rgba(10, 8, 20, 0.9);
+      color: #e0d8ff;
+      font: 600 11px/1 system-ui, sans-serif;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      cursor: none !important;
+    }
+  </style>
+  <script src="device.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.11.3/lib/p5.min.js"></script>
+</head>
+<body>
+  <div id="hud">t swap · space spin · [ ] cam XZ (+1x/s) · r reset · h hud · drag</div>
+  <div id="touch-bar" aria-label="Touch controls">
+    <button type="button" data-act="swap">Swap</button>
+    <button type="button" data-act="spin">Spin</button>
+    <button type="button" data-act="reset">Reset</button>
+    <button type="button" data-act="hud">Hud</button>
+  </div>
+<script>
+/**
+ * multigasorbcube — inside a gaseous planet shell + chrome orb/cube
+ *
+ * Dense multi-panel sky-sphere of banded gas plumes / storms (Jovian-style),
+ * viewed from inside. Chrome orb + cube mutual-reflect and sample the gas shell.
+ * Same controls as multifireorbcube: T swap, [ ] cam yaw +1×/s hold, CCW XZ orbit.
+ *
+ * t swap · space spin · [ ] cam XZ (accel) · r reset · h hud · drag · scroll
+ */
+
+const NOISE_GLSL = `
+float hash(vec2 p) {
+  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+float noise(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  float a = hash(i);
+  float b = hash(i + vec2(1.0, 0.0));
+  float c = hash(i + vec2(0.0, 1.0));
+  float d = hash(i + vec2(1.0, 1.0));
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+float fbm(vec2 p) {
+  float v = 0.0;
+  float a = 0.5;
+  mat2 m = mat2(1.6, 1.2, -1.2, 1.6);
+  for (int i = 0; i < 5; i++) {
+    v += a * noise(p);
+    p = m * p;
+    a *= 0.5;
+  }
+  return v;
+}
+
+// Local gas plume inside one shell panel (gaseous-planet bands + vortices)
+vec3 gasAt(vec2 uv, float latBand, float t, float panelId) {
+  float ph = panelId * 1.618;
+  // zonal flow: strong horizontal shear (planet bands)
+  float band = sin(uv.y * 9.0 + ph * 0.2) * 0.5 + 0.5;
+  float flow = t * (0.12 + 0.08 * band) + ph * 0.05;
+
+  // elongated plumes along longitude (streaky clouds)
+  vec2 p = vec2(uv.x * 5.5 + flow + sin(uv.y * 6.0 + t * 0.3) * 0.35,
+                uv.y * 3.2 + cos(uv.x * 8.0 + t * 0.2) * 0.08);
+  float n = fbm(p + vec2(ph * 0.2, t * 0.08));
+  float n2 = fbm(p * 2.3 - vec2(flow * 0.5, ph));
+  float n3 = fbm(vec2(uv.x * 12.0 - flow * 1.4, uv.y * 4.0) + ph);
+
+  // storm / vortex blob
+  vec2 vc = uv - vec2(0.5 + 0.25 * sin(ph), 0.5 + 0.2 * cos(ph * 1.3));
+  float vortex = exp(-dot(vc, vc) * (8.0 + 6.0 * hash(vec2(panelId, 0.7))));
+  float swirl = fbm(vc * 6.0 + t * 0.25 + ph);
+
+  float gas = n * 0.45 + n2 * 0.3 + n3 * 0.15 + vortex * swirl * 0.35;
+  gas = clamp(gas, 0.0, 1.0);
+
+  // Jovian / ice-giant palette by latitude band + panel
+  // cream, amber, rust, pale blue, white cloud tops
+  vec3 deep = vec3(0.12, 0.06, 0.14);
+  vec3 rust = vec3(0.72, 0.28, 0.12);
+  vec3 amber = vec3(0.92, 0.62, 0.28);
+  vec3 cream = vec3(0.96, 0.88, 0.72);
+  vec3 white = vec3(0.98, 0.96, 0.94);
+  vec3 paleBlue = vec3(0.45, 0.62, 0.88);
+  vec3 teal = vec3(0.25, 0.48, 0.55);
+
+  float hPick = hash(vec2(panelId * 0.13, floor(latBand * 3.0)));
+  vec3 baseA = mix(rust, amber, band);
+  vec3 baseB = mix(cream, paleBlue, hPick);
+  if (latBand > 0.72 || latBand < 0.28)
+    baseA = mix(paleBlue, teal, band); // polar-ish cooler gas
+  vec3 col = mix(deep, baseA, smoothstep(0.15, 0.55, gas));
+  col = mix(col, baseB, smoothstep(0.45, 0.75, gas + vortex * 0.2));
+  col = mix(col, white, smoothstep(0.72, 0.95, gas * 0.7 + n3 * 0.4));
+
+  // dark belt striations
+  float belt = smoothstep(0.35, 0.55, abs(sin(uv.y * 14.0 + ph + t * 0.15)));
+  col *= 0.75 + 0.35 * belt;
+
+  // bright plume edge
+  col += cream * vortex * 0.15 * (0.5 + 0.5 * sin(t + ph));
+
+  // per-panel tint
+  col *= vec3(0.94 + 0.1 * hash(vec2(panelId, 1.1)),
+              0.93 + 0.1 * hash(vec2(panelId, 2.2)),
+              0.96 + 0.08 * hash(vec2(panelId, 3.3)));
+
+  return col * (0.7 + 0.45 * gas);
+}
+
+// Inside a gas giant: dense lat×lon panels of plume / band / storm
+vec3 gasShell(vec3 dir, float t) {
+  vec3 n = normalize(dir);
+  float u = atan(n.z, n.x) / 6.28318530718 + 0.5;
+  float v = 0.5 - asin(clamp(n.y, -1.0, 1.0)) / 3.14159265359;
+
+  const float SEG_LON = 48.0;
+  const float SEG_LAT = 32.0;
+
+  float gu = u * SEG_LON;
+  float gv = v * SEG_LAT;
+  float iu = floor(gu);
+  float iv = floor(gv);
+  vec2 luv = vec2(fract(gu), fract(gv));
+  float panelId = iu + iv * SEG_LON;
+  float latBand = (iv + 0.5) / SEG_LAT;
+
+  vec3 col = gasAt(luv, latBand, t, panelId);
+
+  // hairline panel seams
+  float seamU = min(luv.x, 1.0 - luv.x);
+  float seamV = min(luv.y, 1.0 - luv.y);
+  float seam = min(seamU, seamV);
+  float frame = smoothstep(0.0, 0.005, seam);
+  col *= 0.4 + 0.6 * frame;
+  float rim = smoothstep(0.0, 0.002, seam) * (1.0 - smoothstep(0.002, 0.006, seam));
+  col += vec3(0.85, 0.75, 0.95) * rim * 0.15;
+
+  return col;
+}
+`;
+
+const GAS_VERT = `
+precision mediump float;
+attribute vec3 aPosition;
+attribute vec3 aNormal;
+varying vec3 vDir;
+uniform mat4 uModelViewMatrix;
+uniform mat4 uProjectionMatrix;
+void main() {
+  vDir = normalize(aPosition);
+  gl_Position = uProjectionMatrix * uModelViewMatrix * vec4(aPosition, 1.0);
+}
+`;
+
+const GAS_FRAG = `
+precision mediump float;
+varying vec3 vDir;
+uniform float uTime;
+` + NOISE_GLSL + `
+void main() {
+  vec3 col = gasShell(vDir, uTime);
+  gl_FragColor = vec4(col, 1.0);
+}
+`;
+
+const MIR_VERT = `
+precision mediump float;
+attribute vec3 aPosition;
+attribute vec3 aNormal;
+varying vec3 vNormal;
+varying vec3 vWorldPos;
+uniform mat4 uModelViewMatrix;
+uniform mat4 uProjectionMatrix;
+uniform mat4 uModelMatrix;
+void main() {
+  vec4 world = uModelMatrix * vec4(aPosition, 1.0);
+  vWorldPos = world.xyz;
+  vNormal = normalize((uModelMatrix * vec4(aNormal, 0.0)).xyz);
+  gl_Position = uProjectionMatrix * uModelViewMatrix * vec4(aPosition, 1.0);
+}
+`;
+
+const MIR_FRAG = `
+precision mediump float;
+varying vec3 vNormal;
+varying vec3 vWorldPos;
+uniform float uTime;
+uniform float uFlash;
+uniform vec3 uCamPos;
+uniform vec3 uOtherPos;
+uniform float uOtherSize;
+uniform float uOtherIsSphere;
+uniform float uSelfIsSphere;
+uniform float uRoom; // gas sky-sphere radius
+` + NOISE_GLSL + `
+
+float hitSphere(vec3 O, vec3 D, vec3 C, float rad) {
+  vec3 oc = O - C;
+  float b = dot(oc, D);
+  float c = dot(oc, oc) - rad * rad;
+  float h = b * b - c;
+  if (h < 0.0) return -1.0;
+  h = sqrt(h);
+  float t = -b - h;
+  if (t < 0.001) t = -b + h;
+  if (t < 0.001) return -1.0;
+  return t;
+}
+
+float hitAABB(vec3 O, vec3 D, vec3 C, float h) {
+  vec3 inv = 1.0 / D;
+  vec3 t0 = (C - vec3(h) - O) * inv;
+  vec3 t1 = (C + vec3(h) - O) * inv;
+  vec3 tmin = min(t0, t1);
+  vec3 tmax = max(t0, t1);
+  float tNear = max(max(tmin.x, tmin.y), tmin.z);
+  float tFar = min(min(tmax.x, tmax.y), tmax.z);
+  if (tNear > tFar || tFar < 0.001) return -1.0;
+  float t = tNear > 0.001 ? tNear : tFar;
+  if (t < 0.001) return -1.0;
+  return t;
+}
+
+vec3 aabbNormal(vec3 P, vec3 C, float h) {
+  vec3 d = (P - C) / h;
+  vec3 a = abs(d);
+  if (a.x > a.y && a.x > a.z) return vec3(sign(d.x), 0.0, 0.0);
+  if (a.y > a.z) return vec3(0.0, sign(d.y), 0.0);
+  return vec3(0.0, 0.0, sign(d.z));
+}
+
+// exit hit on gas sky-sphere |X|=R (camera/objects inside shell)
+float hitSkySphere(vec3 P, vec3 D, float s, out vec3 hitN) {
+  D = normalize(D);
+  // |P + t D|^2 = s^2  →  t^2 + 2(P·D)t + |P|^2 - s^2 = 0
+  float b = 2.0 * dot(P, D);
+  float c = dot(P, P) - s * s;
+  float disc = b * b - 4.0 * c;
+  if (disc < 0.0) return -1.0;
+  float h = sqrt(disc);
+  float t = (-b + h) * 0.5; // far root = exit shell
+  if (t < 0.001) return -1.0;
+  hitN = normalize(P + D * t);
+  return t;
+}
+
+vec3 sampleGasShell(vec3 P, vec3 D) {
+  vec3 hitN;
+  float t = hitSkySphere(P, D, uRoom, hitN);
+  if (t < 0.0) return vec3(0.08, 0.06, 0.12);
+  return gasShell(hitN, uTime);
+}
+
+// other chrome: bounce then into gas shell
+vec3 shadeOtherChrome(vec3 P, vec3 N, vec3 incomingDir) {
+  vec3 R = reflect(normalize(incomingDir), normalize(N));
+  float ndv = max(dot(normalize(N), normalize(-incomingDir)), 0.0);
+  float fres = pow(1.0 - ndv, 3.5);
+  vec3 base = vec3(0.02, 0.02, 0.03);
+  vec3 gas = sampleGasShell(P + N * 0.02, R);
+  vec3 col = mix(base, gas, 0.8 + 0.2 * fres);
+  if (uOtherIsSphere > 0.5) col *= vec3(1.02, 1.04, 1.08);
+  else col *= vec3(1.05, 1.03, 1.0);
+  col += vec3(0.08, 0.06, 0.12) * uFlash;
+  return col;
+}
+
+vec3 bounceOther(vec3 P, vec3 R) {
+  vec3 D = normalize(R);
+  float t = -1.0;
+  if (uOtherIsSphere > 0.5)
+    t = hitSphere(P, D, uOtherPos, uOtherSize);
+  else
+    t = hitAABB(P, D, uOtherPos, uOtherSize);
+  if (t < 0.0)
+    return sampleGasShell(P, D);
+
+  vec3 H = P + D * t;
+  vec3 N;
+  if (uOtherIsSphere > 0.5) N = normalize(H - uOtherPos);
+  else N = aabbNormal(H, uOtherPos, uOtherSize);
+  return shadeOtherChrome(H, N, D);
+}
+
+void main() {
+  vec3 N = normalize(vNormal);
+  vec3 V = normalize(uCamPos - vWorldPos);
+  if (dot(N, V) < 0.0) N = -N;
+  vec3 R = reflect(-V, N);
+
+  vec3 refl = bounceOther(vWorldPos + N * 0.02, R);
+
+  float ndv = max(dot(N, V), 0.0);
+  float fres = pow(1.0 - ndv, 4.0);
+  vec3 base = vec3(0.016, 0.016, 0.024);
+  vec3 col = mix(base, refl, 0.8 + 0.2 * fres);
+
+  if (uSelfIsSphere < 0.5) {
+    float face = abs(N.x) * 0.035 + abs(N.y) * 0.02 + abs(N.z) * 0.03;
+    col *= 1.0 - face;
+  } else {
+    col *= 0.94 + 0.06 * max(N.y, 0.0);
+  }
+
+  float rim = pow(1.0 - ndv, 2.6);
+  col += refl * rim * 0.2;
+  col += vec3(0.08, 0.06, 0.12) * uFlash;
+
+  col = col / (1.0 + col * 0.4);
+  col = pow(max(col, 0.0), vec3(0.92));
+  gl_FragColor = vec4(col, 1.0);
+}
+`;
+
+let gasSh, mirSh;
+let showHud = true;
+let autoSpin = true;
+let flash = 0;
+let isPhone = false;
+
+// true = orb center, cube orbits  |  false = cube center, orb orbits
+let ballCenter = true;
+let orbitAngle = 0;
+const ORBIT_SPEED = 0.55; // object revolve CCW rad/s in XZ
+const CAM_YAW_SPEED = 1.15; // base camera XZ orbit rad/s ([ CW, ] CCW)
+// hold [ or ] → speed = base * (1 + seconds held)  → +1× every second
+let camKeyHoldT = 0;
+let camKeyLast = 0; // -1 [, +1 ], 0 none
+
+let ballR = 90;
+let cubeHalf = 55;
+let orbitRadius = 200;
+let skyR = 320; // gas sky-sphere radius
+
+let yaw = 0.75;
+let pitch = 0.28;
+let dist = 420;
+let targetDist = 420;
+let dragging = false;
+let lastX = 0, lastY = 0;
+let velYaw = 0, velPitch = 0;
+
+function setup() {
+  const prof = window.DeviceProfile && DeviceProfile.get && DeviceProfile.get();
+  isPhone = !!(prof && prof.isPhone);
+  let dpr = window.devicePixelRatio || 1;
+  if (isPhone) dpr = Math.min(dpr, 1.5);
+  else dpr = Math.min(dpr, 2);
+
+  createCanvas(windowWidth, windowHeight, WEBGL);
+  pixelDensity(dpr);
+  setAttributes('antialias', true);
+  frameRate(60);
+
+  gasSh = createShader(GAS_VERT, GAS_FRAG);
+  mirSh = createShader(MIR_VERT, MIR_FRAG);
+
+  const m = Math.min(width, height);
+  skyR = m * 0.52;
+  ballR = m * 0.095;
+  cubeHalf = m * 0.055;
+  orbitRadius = m * 0.18;
+  dist = m * 0.42;
+  targetDist = dist;
+
+  noStroke();
+  noCursor();
+  document.documentElement.style.cursor = 'none';
+  document.body.style.cursor = 'none';
+  wireTouchBar();
+  wireWheel();
+}
+
+function hitTouchBar() {
+  try {
+    if (typeof event !== 'undefined' && event && event.target && event.target.closest) {
+      return !!event.target.closest('#touch-bar');
+    }
+  } catch (e) {}
+  return false;
+}
+
+function applyOrbit(dx, dy) {
+  const s = 0.012;
+  yaw -= dx * s;
+  pitch += dy * s;
+  pitch = constrain(pitch, -1.1, 1.1);
+  velYaw = -dx * s * 0.45;
+  velPitch = dy * s * 0.45;
+}
+
+/** CCW in XZ viewed from +Y: θ increasing */
+function orbitXZ(angle, r) {
+  return { x: r * Math.cos(angle), y: 0, z: r * Math.sin(angle) };
+}
+
+function modelMatT(tx, ty, tz) {
+  return [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, tx, ty, tz, 1];
+}
+
+/** Inverted gas-planet sky-sphere (inside the giant) */
+function drawGasSkySphere() {
+  push();
+  scale(-1, 1, 1);
+  shader(gasSh);
+  gasSh.setUniform('uTime', millis() / 1000);
+  const d = isPhone ? 72 : 128;
+  sphere(skyR, d, Math.max(56, (d * 0.78) | 0));
+  resetShader();
+  pop();
+}
+
+function drawChrome(opts) {
+  // opts: isSphere, x,y,z, size, otherPos, otherSize, otherIsSphere, cam
+  push();
+  translate(opts.x, opts.y, opts.z);
+  shader(mirSh);
+  mirSh.setUniform('uTime', millis() / 1000);
+  mirSh.setUniform('uFlash', flash);
+  mirSh.setUniform('uCamPos', [opts.cam.x, opts.cam.y, opts.cam.z]);
+  mirSh.setUniform('uOtherPos', [opts.otherPos.x, opts.otherPos.y, opts.otherPos.z]);
+  mirSh.setUniform('uOtherSize', opts.otherSize);
+  mirSh.setUniform('uOtherIsSphere', opts.otherIsSphere ? 1.0 : 0.0);
+  mirSh.setUniform('uSelfIsSphere', opts.isSphere ? 1.0 : 0.0);
+  mirSh.setUniform('uRoom', skyR * 0.995);
+  mirSh.setUniform('uModelMatrix', modelMatT(opts.x, opts.y, opts.z));
+
+  if (opts.isSphere) {
+    const d = isPhone ? 36 : 56;
+    sphere(opts.size, d, Math.max(20, (d * 0.7) | 0));
+  } else {
+    box(opts.size * 2);
+  }
+  resetShader();
+  pop();
+}
+
+function draw() {
+  const dt = Math.min(deltaTime / 1000, 0.05);
+  if (flash > 0) flash *= 0.94;
+
+  if (mouseIsPressed && dragging) {
+    const dx = mouseX - lastX;
+    const dy = mouseY - lastY;
+    if (dx || dy) {
+      applyOrbit(dx, dy);
+      lastX = mouseX;
+      lastY = mouseY;
+    }
+  }
+
+  if (autoSpin) orbitAngle += ORBIT_SPEED * dt;
+
+  // [ ] — camera XZ yaw: ] CCW, [ CW; hold accelerates +1× base every second
+  // keyCode 219 = [, 221 = ]
+  const holdCCW = keyIsDown(221);
+  const holdCW = keyIsDown(219);
+  if (holdCCW || holdCW) {
+    const dir = holdCCW ? 1 : -1;
+    if (camKeyLast !== dir) {
+      camKeyLast = dir;
+      camKeyHoldT = 0;
+    } else {
+      camKeyHoldT += dt;
+    }
+    // 1× at t=0, 2× after 1s, 3× after 2s, …
+    const mult = 1.0 + camKeyHoldT;
+    yaw += dir * CAM_YAW_SPEED * mult * dt;
+  } else {
+    camKeyLast = 0;
+    camKeyHoldT = 0;
+  }
+
+  if (!dragging) {
+    yaw += velYaw;
+    pitch += velPitch;
+    pitch = constrain(pitch, -1.1, 1.1);
+    velYaw *= 0.92;
+    velPitch *= 0.92;
+    if (Math.abs(velYaw) < 1e-5) velYaw = 0;
+    if (Math.abs(velPitch) < 1e-5) velPitch = 0;
+  }
+
+  dist = lerp(dist, targetDist, 0.15);
+  // keep camera inside gas sky-sphere
+  const maxD = skyR * 0.62;
+  if (dist > maxD) {
+    dist = maxD;
+    targetDist = maxD;
+  }
+
+  const orbit = orbitXZ(orbitAngle, orbitRadius);
+  let ballPos, cubePos;
+  if (ballCenter) {
+    ballPos = { x: 0, y: 0, z: 0 };
+    cubePos = {
+      x: orbit.x,
+      y: Math.sin(orbitAngle * 2) * ballR * 0.08,
+      z: orbit.z
+    };
+  } else {
+    cubePos = { x: 0, y: 0, z: 0 };
+    ballPos = {
+      x: orbit.x,
+      y: Math.sin(orbitAngle * 2) * cubeHalf * 0.12,
+      z: orbit.z
+    };
+  }
+
+  const camX = dist * Math.cos(pitch) * Math.sin(yaw);
+  const camY = dist * Math.sin(pitch);
+  const camZ = dist * Math.cos(pitch) * Math.cos(yaw);
+  const cam = { x: camX, y: camY, z: camZ };
+
+  background(6, 4, 12);
+  camera(camX, camY, camZ, 0, 0, 0, 0, 1, 0);
+  perspective(PI / 2.7, width / Math.max(height, 1), 1, skyR * 8);
+
+  drawGasSkySphere();
+
+  const ballDist = Math.hypot(ballPos.x - camX, ballPos.y - camY, ballPos.z - camZ);
+  const cubeDist = Math.hypot(cubePos.x - camX, cubePos.y - camY, cubePos.z - camZ);
+
+  const drawBall = () =>
+    drawChrome({
+      isSphere: true,
+      x: ballPos.x, y: ballPos.y, z: ballPos.z,
+      size: ballR,
+      otherPos: cubePos,
+      otherSize: cubeHalf,
+      otherIsSphere: false,
+      cam
+    });
+  const drawCube = () =>
+    drawChrome({
+      isSphere: false,
+      x: cubePos.x, y: cubePos.y, z: cubePos.z,
+      size: cubeHalf,
+      otherPos: ballPos,
+      otherSize: ballR,
+      otherIsSphere: true,
+      cam
+    });
+
+  if (ballDist > cubeDist) {
+    drawBall();
+    drawCube();
+  } else {
+    drawCube();
+    drawBall();
+  }
+
+  // faint cube edge when cube is center
+  if (!ballCenter) {
+    push();
+    translate(cubePos.x, cubePos.y, cubePos.z);
+    noFill();
+    stroke(200, 190, 255, 28);
+    strokeWeight(1);
+    box(cubeHalf * 2 * 1.01);
+    noStroke();
+    pop();
+  }
+
+  // deep atmosphere haze
+  push();
+  noStroke();
+  fill(80, 60, 120, 12);
+  sphere(skyR * 0.1, 10, 8);
+  pop();
+
+  const hud = document.getElementById('hud');
+  if (hud) {
+    hud.classList.toggle('hidden', !showHud);
+    if (showHud) {
+      hud.textContent =
+        (ballCenter
+          ? 'inside gas giant · orb center · cube CCW (xz) · '
+          : 'inside gas giant · cube center · orb CCW (xz) · ') +
+        't swap · [ cam CW · ] cam CCW (+1x/s hold) · space spin · r reset · drag';
+    }
+  }
+}
+
+function toggleOrder() {
+  ballCenter = !ballCenter;
+}
+
+function mousePressed() {
+  if (hitTouchBar()) return;
+  dragging = true;
+  lastX = mouseX;
+  lastY = mouseY;
+  velYaw = 0;
+  velPitch = 0;
+}
+function mouseDragged() {
+  if (!dragging) return false;
+  applyOrbit(mouseX - lastX, mouseY - lastY);
+  lastX = mouseX;
+  lastY = mouseY;
+  return false;
+}
+function mouseReleased() {
+  dragging = false;
+}
+function touchStarted() {
+  if (hitTouchBar()) return true;
+  dragging = true;
+  lastX = mouseX;
+  lastY = mouseY;
+  velYaw = 0;
+  velPitch = 0;
+  return false;
+}
+function touchMoved() {
+  if (!dragging) return false;
+  applyOrbit(mouseX - lastX, mouseY - lastY);
+  lastX = mouseX;
+  lastY = mouseY;
+  return false;
+}
+function touchEnded() {
+  dragging = false;
+}
+
+function keyPressed() {
+  if (key === 't' || key === 'T') toggleOrder();
+  if (key === ' ') autoSpin = !autoSpin;
+  if (key === 'r' || key === 'R') doReset();
+  if (key === 'h' || key === 'H') showHud = !showHud;
+  if (key === 'p' || key === 'P') flash = 1;
+}
+
+function doReset() {
+  ballCenter = true;
+  orbitAngle = 0;
+  yaw = 0.75;
+  pitch = 0.28;
+  const m = Math.min(width, height);
+  targetDist = m * 0.42;
+  dist = targetDist;
+  velYaw = 0;
+  velPitch = 0;
+  flash = 0;
+  autoSpin = true;
+  camKeyHoldT = 0;
+  camKeyLast = 0;
+}
+
+function wireWheel() {
+  window.addEventListener(
+    'wheel',
+    (ev) => {
+      const m = Math.min(width, height);
+      targetDist = constrain(targetDist + ev.deltaY * 0.35, m * 0.22, skyR * 0.6);
+      ev.preventDefault();
+    },
+    { passive: false }
+  );
+}
+
+function windowResized() {
+  let dpr = window.devicePixelRatio || 1;
+  if (isPhone) dpr = Math.min(dpr, 1.5);
+  else dpr = Math.min(dpr, 2);
+  pixelDensity(dpr);
+  resizeCanvas(windowWidth, windowHeight);
+  const m = Math.min(width, height);
+  skyR = m * 0.52;
+  ballR = m * 0.095;
+  cubeHalf = m * 0.055;
+  orbitRadius = m * 0.18;
+  targetDist = constrain(targetDist, m * 0.22, skyR * 0.6);
+}
+
+function wireTouchBar() {
+  const bar = document.getElementById('touch-bar');
+  if (!bar) return;
+  bar.querySelectorAll('button').forEach((btn) => {
+    btn.addEventListener('pointerdown', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const act = btn.getAttribute('data-act');
+      if (act === 'swap') toggleOrder();
+      if (act === 'spin') autoSpin = !autoSpin;
+      if (act === 'reset') doReset();
+      if (act === 'hud') showHud = !showHud;
+    });
+  });
+}
+</script>
+</body>
+</html>

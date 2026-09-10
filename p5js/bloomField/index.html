@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <title>bloomField</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      background: #05040a;
+      overflow: hidden;
+      font-family: system-ui, sans-serif;
+      touch-action: none;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    canvas { display: block; width: 100%; height: 100%; }
+    #touch-bar {
+      display: none;
+      position: fixed;
+      left: 8px; right: 8px; bottom: max(8px, env(safe-area-inset-bottom));
+      z-index: 10;
+      gap: 6px;
+      grid-template-columns: repeat(4, 1fr);
+    }
+    html.input-touch #touch-bar, html.device-phone #touch-bar, html.device-tablet #touch-bar {
+      display: grid;
+    }
+    #touch-bar button {
+      min-height: 44px;
+      border-radius: 8px;
+      border: 1px solid rgba(255, 140, 80, 0.4);
+      background: rgba(12, 8, 16, 0.85);
+      color: #ffd8b0;
+      font: 600 11px/1 system-ui, sans-serif;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    #touch-bar button:active { background: rgba(180, 60, 30, 0.45); }
+  </style>
+  <script src="device.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.11.3/lib/p5.min.js"></script>
+</head>
+<body>
+  <div id="touch-bar" aria-label="Touch controls">
+    <button type="button" data-act="pause">Pause</button>
+    <button type="button" data-act="boom">Boom</button>
+    <button type="button" data-act="clear">Clear</button>
+    <button type="button" data-act="reset">Reset</button>
+  </div>
+<script>
+/**
+ * bloomField — explosions forever
+ *
+ * Radial particle blooms that chain: when one dies down, another detonates.
+ * Residual glow trails (ink wash). Click / touch to force a blast.
+ *
+ * space pause · b / click boom · c clear trails · r reseed
+ */
+
+let particles = [];
+let sparks = [];
+let shockwaves = [];
+let paused = false;
+let nextAutoAt = 0;
+let blastCount = 0;
+let trailFade = 18; // higher = faster fade, lower = longer ink trails
+
+const MAX_PARTICLES = 900;
+const MAX_SPARKS = 400;
+
+function setup() {
+  createCanvas(windowWidth, windowHeight);
+  const p = window.DeviceProfile && DeviceProfile.get && DeviceProfile.get();
+  const dpr = (p && p.isPhone) ? Math.min(window.devicePixelRatio || 1, 2) : (window.devicePixelRatio || 1);
+  pixelDensity(dpr);
+  colorMode(HSB, 360, 100, 100, 100);
+  background(260, 40, 4);
+  nextAutoAt = millis() + 200;
+  wireTouchBar();
+}
+
+function draw() {
+  // ink residual — never full wipe, so blooms stack as trails
+  noStroke();
+  fill(260, 35, 4, trailFade * 0.35);
+  rect(0, 0, width, height);
+
+  if (!paused) {
+    // auto chain: if quiet, detonate; also periodic mid-field blasts
+    const live = particles.length + sparks.length;
+    if (millis() >= nextAutoAt || live < 12) {
+      autoBoom();
+    }
+
+    for (let i = particles.length - 1; i >= 0; i--) {
+      particles[i].update();
+      if (particles[i].dead) particles.splice(i, 1);
+    }
+    for (let i = sparks.length - 1; i >= 0; i--) {
+      sparks[i].update();
+      if (sparks[i].dead) sparks.splice(i, 1);
+    }
+    for (let i = shockwaves.length - 1; i >= 0; i--) {
+      shockwaves[i].update();
+      if (shockwaves[i].dead) shockwaves.splice(i, 1);
+    }
+  }
+
+  for (let i = 0; i < shockwaves.length; i++) shockwaves[i].display();
+  for (let i = 0; i < particles.length; i++) particles[i].display();
+  for (let i = 0; i < sparks.length; i++) sparks[i].display();
+
+  // subtle vignette pulse
+  const pulse = 0.5 + 0.5 * sin(millis() * 0.0015);
+  noFill();
+  stroke(20, 40, 8, 8 + pulse * 6);
+  strokeWeight(Math.max(width, height) * 0.18);
+  ellipse(width * 0.5, height * 0.5, width * 1.1, height * 1.1);
+
+  // HUD (desktop / fine pointer only — touch bar covers controls on phone)
+  const prof = window.DeviceProfile && DeviceProfile.get && DeviceProfile.get();
+  if (!prof || !prof.isTouch) {
+    fill(40, 10, 90, 55);
+    noStroke();
+    textSize(11);
+    textAlign(LEFT, BASELINE);
+    text("space pause  ·  click / b boom  ·  c clear  ·  r reseed", 12, height - 14);
+  }
+}
+
+function autoBoom() {
+  // prefer center-weighted random epicenters, sometimes edge
+  let x, y;
+  if (random() < 0.55) {
+    x = width * 0.5 + randomGaussian() * width * 0.12;
+    y = height * 0.5 + randomGaussian() * height * 0.12;
+  } else {
+    x = random(width * 0.12, width * 0.88);
+    y = random(height * 0.12, height * 0.88);
+  }
+  explode(x, y, random(0.75, 1.35));
+  // stagger next auto detonation so blasts overlap but don't stack forever
+  nextAutoAt = millis() + random(420, 1100);
+}
+
+function explode(x, y, scale) {
+  scale = scale || 1;
+  blastCount++;
+  const n = Math.floor((70 + random(40, 90)) * scale);
+  const hueBase = (blastCount * 37 + random(40)) % 360;
+  // hot core flash via dense short-life particles near origin
+  for (let i = 0; i < n; i++) {
+    if (particles.length >= MAX_PARTICLES) break;
+    particles.push(new Shard(x, y, hueBase, scale));
+  }
+  const sn = Math.floor((40 + random(20, 50)) * scale);
+  for (let i = 0; i < sn; i++) {
+    if (sparks.length >= MAX_SPARKS) break;
+    sparks.push(new Spark(x, y, hueBase, scale));
+  }
+  shockwaves.push(new Shock(x, y, hueBase, scale));
+  // occasional secondary micro-bursts (debris)
+  if (random() < 0.45) {
+    const delay = 0; // fire secondary immediately offset in space
+    const ox = x + random(-40, 40) * scale;
+    const oy = y + random(-40, 40) * scale;
+    for (let i = 0; i < 18 * scale; i++) {
+      if (particles.length >= MAX_PARTICLES) break;
+      particles.push(new Shard(ox, oy, hueBase + 20, scale * 0.55));
+    }
+  }
+}
+
+class Shard {
+  constructor(x, y, hueBase, scale) {
+    this.x = x;
+    this.y = y;
+    const a = random(TWO_PI);
+    // power-law-ish outward speed: mostly fast shell, some slow core
+    const speed = (pow(random(), 0.45) * random(2.2, 9.5) + random(0.4, 1.8)) * scale;
+    this.vx = cos(a) * speed;
+    this.vy = sin(a) * speed;
+    this.life = 1;
+    this.decay = random(0.008, 0.022) / scale;
+    this.r = random(1.2, 4.2) * scale;
+    this.hue = (hueBase + random(-25, 35) + 360) % 360;
+    this.drag = random(0.965, 0.985);
+    this.gravity = random(0.01, 0.045) * scale;
+    this.dead = false;
+    // plotter / ink streak length
+    this.px = x;
+    this.py = y;
+  }
+
+  update() {
+    this.px = this.x;
+    this.py = this.y;
+    this.vx *= this.drag;
+    this.vy *= this.drag;
+    this.vy += this.gravity;
+    this.x += this.vx;
+    this.y += this.vy;
+    this.life -= this.decay;
+    if (this.life <= 0) this.dead = true;
+  }
+
+  display() {
+    const L = constrain(this.life, 0, 1);
+    // heat curve: white-hot → yellow → orange → crimson → violet smoke
+    const sat = map(L, 1, 0, 40, 90);
+    const bri = map(L, 1, 0, 100, 18);
+    const a = map(L, 1, 0, 95, 0);
+    stroke(this.hue, sat, bri, a);
+    strokeWeight(this.r * L);
+    line(this.px, this.py, this.x, this.y);
+    noStroke();
+    fill(this.hue, sat * 0.6, Math.min(100, bri + 10), a * 0.85);
+    ellipse(this.x, this.y, this.r * L * 1.6, this.r * L * 1.6);
+  }
+}
+
+class Spark {
+  constructor(x, y, hueBase, scale) {
+    this.x = x;
+    this.y = y;
+    const a = random(TWO_PI);
+    const speed = random(4, 14) * scale;
+    this.vx = cos(a) * speed;
+    this.vy = sin(a) * speed;
+    this.life = 1;
+    this.decay = random(0.02, 0.05);
+    this.r = random(0.6, 1.8);
+    this.hue = (hueBase + random(-10, 50) + 360) % 360;
+    this.dead = false;
+  }
+
+  update() {
+    this.vx *= 0.96;
+    this.vy *= 0.96;
+    this.vy += 0.06;
+    this.x += this.vx;
+    this.y += this.vy;
+    this.life -= this.decay;
+    if (this.life <= 0) this.dead = true;
+  }
+
+  display() {
+    const L = constrain(this.life, 0, 1);
+    noStroke();
+    fill(this.hue, 30 + 50 * (1 - L), 100, 90 * L);
+    ellipse(this.x, this.y, this.r * 2 * L, this.r * 2 * L);
+  }
+}
+
+class Shock {
+  constructor(x, y, hueBase, scale) {
+    this.x = x;
+    this.y = y;
+    this.r = 4;
+    this.maxR = random(80, 180) * scale;
+    this.life = 1;
+    this.hue = hueBase;
+    this.dead = false;
+  }
+
+  update() {
+    this.r += (this.maxR - this.r) * 0.12 + 2.5;
+    this.life -= 0.035;
+    if (this.life <= 0 || this.r > this.maxR * 1.15) this.dead = true;
+  }
+
+  display() {
+    const L = constrain(this.life, 0, 1);
+    noFill();
+    stroke(this.hue, 40, 100, 55 * L);
+    strokeWeight(2.2 * L);
+    ellipse(this.x, this.y, this.r * 2, this.r * 2);
+    stroke(this.hue, 20, 100, 25 * L);
+    strokeWeight(1);
+    ellipse(this.x, this.y, this.r * 1.35, this.r * 1.35);
+  }
+}
+
+function mousePressed() {
+  // ignore if over touch bar
+  if (event && event.target && event.target.closest && event.target.closest('#touch-bar')) return;
+  explode(mouseX, mouseY, random(0.9, 1.4));
+  nextAutoAt = millis() + random(500, 900);
+}
+
+function touchStarted() {
+  if (event && event.target && event.target.closest && event.target.closest('#touch-bar')) {
+    return false;
+  }
+  if (touches && touches.length) {
+    explode(touches[0].x, touches[0].y, random(0.9, 1.4));
+    nextAutoAt = millis() + random(500, 900);
+  }
+  return false;
+}
+
+function keyPressed() {
+  if (key === ' ') paused = !paused;
+  if (key === 'b' || key === 'B') {
+    explode(width * 0.5, height * 0.5, 1.2);
+    nextAutoAt = millis() + 700;
+  }
+  if (key === 'c' || key === 'C') {
+    // wipe trails hard
+    background(260, 40, 4);
+  }
+  if (key === 'r' || key === 'R') {
+    particles = [];
+    sparks = [];
+    shockwaves = [];
+    background(260, 40, 4);
+    blastCount = 0;
+    nextAutoAt = millis() + 120;
+  }
+}
+
+function windowResized() {
+  resizeCanvas(windowWidth, windowHeight);
+  // soft refill so resize doesn't flash white
+  background(260, 40, 4);
+}
+
+function wireTouchBar() {
+  const bar = document.getElementById('touch-bar');
+  if (!bar) return;
+  bar.querySelectorAll('button').forEach((btn) => {
+    btn.addEventListener('pointerdown', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const act = btn.getAttribute('data-act');
+      if (act === 'pause') paused = !paused;
+      if (act === 'boom') {
+        explode(width * 0.5, height * 0.5, 1.25);
+        nextAutoAt = millis() + 700;
+      }
+      if (act === 'clear') background(260, 40, 4);
+      if (act === 'reset') {
+        particles = [];
+        sparks = [];
+        shockwaves = [];
+        background(260, 40, 4);
+        blastCount = 0;
+        nextAutoAt = millis() + 120;
+      }
+    });
+  });
+}
+</script>
+</body>
+</html>

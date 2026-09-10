@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <title>explosion</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      background: #010108;
+      overflow: hidden;
+      font-family: system-ui, sans-serif;
+      touch-action: none;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    canvas { display: block; width: 100%; height: 100%; }
+    #touch-bar {
+      display: none;
+      position: fixed;
+      left: 8px; right: 8px; bottom: max(8px, env(safe-area-inset-bottom));
+      z-index: 10;
+      gap: 6px;
+      grid-template-columns: repeat(4, 1fr);
+    }
+    html.input-touch #touch-bar, html.device-phone #touch-bar, html.device-tablet #touch-bar {
+      display: grid;
+    }
+    #touch-bar button {
+      min-height: 44px;
+      border-radius: 8px;
+      border: 1px solid rgba(120, 180, 255, 0.4);
+      background: rgba(4, 6, 18, 0.88);
+      color: #c8e0ff;
+      font: 600 11px/1 system-ui, sans-serif;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    #touch-bar button:active { background: rgba(60, 100, 200, 0.45); }
+  </style>
+  <script src="device.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.11.3/lib/p5.min.js"></script>
+</head>
+<body>
+  <div id="touch-bar" aria-label="Touch controls">
+    <button type="button" data-act="pause">Pause</button>
+    <button type="button" data-act="boom">Boom</button>
+    <button type="button" data-act="clear">Clear</button>
+    <button type="button" data-act="reset">Reset</button>
+  </div>
+<script>
+/**
+ * explosion — space detonation, forever
+ *
+ * Cosmic blasts in a starfield: white-hot core → cyan/magenta plasma →
+ * violet nebula smoke. Zero-g debris, shock rings, secondary debris kicks.
+ * Auto-chains when the field goes quiet.
+ *
+ * space pause · b / click boom · c clear · r reseed
+ */
+
+let stars = [];
+let debris = [];
+let plasma = [];
+let rings = [];
+let flashes = [];
+let paused = false;
+let nextAutoAt = 0;
+let blastId = 0;
+
+const MAX_DEBRIS = 1000;
+const MAX_PLASMA = 500;
+
+function setup() {
+  createCanvas(windowWidth, windowHeight);
+  const p = window.DeviceProfile && DeviceProfile.get && DeviceProfile.get();
+  const dpr = (p && p.isPhone) ? Math.min(window.devicePixelRatio || 1, 2) : (window.devicePixelRatio || 1);
+  pixelDensity(dpr);
+  colorMode(HSB, 360, 100, 100, 100);
+  seedStars();
+  background(250, 30, 2);
+  nextAutoAt = millis() + 180;
+  wireTouchBar();
+}
+
+function seedStars() {
+  stars = [];
+  const n = Math.floor(Math.min(width, height) * 0.35 + 80);
+  for (let i = 0; i < n; i++) {
+    stars.push({
+      x: random(width),
+      y: random(height),
+      r: random(0.4, 1.8),
+      b: random(40, 100),
+      tw: random(TWO_PI),
+      speed: random(0.01, 0.04),
+      hue: random() < 0.15 ? random(180, 260) : 0
+    });
+  }
+}
+
+function draw() {
+  // deep space wash — keeps faint nebula memory without full wipe
+  noStroke();
+  fill(250, 40, 2, 22);
+  rect(0, 0, width, height);
+
+  drawStars();
+
+  if (!paused) {
+    const live = debris.length + plasma.length;
+    if (millis() >= nextAutoAt || live < 18) {
+      spaceBoom();
+    }
+
+    for (let i = debris.length - 1; i >= 0; i--) {
+      debris[i].update();
+      if (debris[i].dead) debris.splice(i, 1);
+    }
+    for (let i = plasma.length - 1; i >= 0; i--) {
+      plasma[i].update();
+      if (plasma[i].dead) plasma.splice(i, 1);
+    }
+    for (let i = rings.length - 1; i >= 0; i--) {
+      rings[i].update();
+      if (rings[i].dead) rings.splice(i, 1);
+    }
+    for (let i = flashes.length - 1; i >= 0; i--) {
+      flashes[i].update();
+      if (flashes[i].dead) flashes.splice(i, 1);
+    }
+  }
+
+  // draw order: nebula plasma under hard debris, flash on top
+  for (let i = 0; i < plasma.length; i++) plasma[i].display();
+  for (let i = 0; i < rings.length; i++) rings[i].display();
+  for (let i = 0; i < debris.length; i++) debris[i].display();
+  for (let i = 0; i < flashes.length; i++) flashes[i].display();
+
+  const prof = window.DeviceProfile && DeviceProfile.get && DeviceProfile.get();
+  if (!prof || !prof.isTouch) {
+    fill(210, 20, 90, 50);
+    noStroke();
+    textSize(11);
+    textAlign(LEFT, BASELINE);
+    text("space pause  ·  click / b boom  ·  c clear  ·  r reseed", 12, height - 14);
+  }
+}
+
+function drawStars() {
+  noStroke();
+  for (let i = 0; i < stars.length; i++) {
+    const s = stars[i];
+    const tw = 0.55 + 0.45 * sin(millis() * s.speed + s.tw);
+    if (s.hue > 0) {
+      fill(s.hue, 40, s.b * tw, 70);
+    } else {
+      fill(0, 0, s.b * tw, 80);
+    }
+    ellipse(s.x, s.y, s.r * tw, s.r * tw);
+  }
+}
+
+function spaceBoom() {
+  // mostly center-weighted; sometimes a distant blast at the edge of the viewport
+  let x, y, scale;
+  if (random() < 0.6) {
+    x = width * 0.5 + randomGaussian() * width * 0.1;
+    y = height * 0.5 + randomGaussian() * height * 0.1;
+    scale = random(0.95, 1.45);
+  } else {
+    x = random(width * 0.1, width * 0.9);
+    y = random(height * 0.1, height * 0.9);
+    scale = random(0.55, 1.1);
+  }
+  detonate(x, y, scale);
+  nextAutoAt = millis() + random(500, 1300);
+}
+
+function detonate(x, y, scale) {
+  scale = scale || 1;
+  blastId++;
+  // cycle cosmic palettes: ice blue, magenta, teal, violet, solar white
+  const palettes = [
+    { core: 200, shell: 280, smoke: 250 },
+    { core: 40, shell: 320, smoke: 280 },
+    { core: 180, shell: 160, smoke: 220 },
+    { core: 0, shell: 300, smoke: 260 },
+    { core: 55, shell: 20, smoke: 240 }
+  ];
+  const pal = palettes[blastId % palettes.length];
+
+  flashes.push(new Flash(x, y, pal.core, scale));
+
+  // multi-layer shock: fast hard ring + soft nebula ring
+  rings.push(new ShockRing(x, y, pal.shell, scale, 1));
+  rings.push(new ShockRing(x, y, pal.smoke, scale * 1.15, 0.55));
+
+  const nDebris = Math.floor((90 + random(50, 100)) * scale);
+  for (let i = 0; i < nDebris; i++) {
+    if (debris.length >= MAX_DEBRIS) break;
+    debris.push(new Debris(x, y, pal, scale));
+  }
+
+  const nPlasma = Math.floor((50 + random(30, 70)) * scale);
+  for (let i = 0; i < nPlasma; i++) {
+    if (plasma.length >= MAX_PLASMA) break;
+    plasma.push(new Plasma(x, y, pal, scale));
+  }
+
+  // secondary debris kicks — shrapnel from ruptured shell
+  if (random() < 0.65) {
+    const kicks = Math.floor(random(2, 5));
+    for (let k = 0; k < kicks; k++) {
+      const a = random(TWO_PI);
+      const d = random(20, 70) * scale;
+      const sx = x + cos(a) * d;
+      const sy = y + sin(a) * d;
+      const sn = Math.floor(random(12, 28) * scale);
+      for (let i = 0; i < sn; i++) {
+        if (debris.length >= MAX_DEBRIS) break;
+        debris.push(new Debris(sx, sy, pal, scale * 0.45));
+      }
+    }
+  }
+}
+
+class Flash {
+  constructor(x, y, hue, scale) {
+    this.x = x;
+    this.y = y;
+    this.r = 8 * scale;
+    this.maxR = random(40, 90) * scale;
+    this.life = 1;
+    this.hue = hue;
+    this.dead = false;
+  }
+
+  update() {
+    this.r += (this.maxR - this.r) * 0.25 + 3;
+    this.life -= 0.06;
+    if (this.life <= 0) this.dead = true;
+  }
+
+  display() {
+    const L = constrain(this.life, 0, 1);
+    noStroke();
+    // white-hot core
+    fill(0, 0, 100, 90 * L);
+    ellipse(this.x, this.y, this.r * 0.55, this.r * 0.55);
+    fill(this.hue, 40, 100, 55 * L);
+    ellipse(this.x, this.y, this.r * 1.2, this.r * 1.2);
+    fill(this.hue, 70, 100, 25 * L);
+    ellipse(this.x, this.y, this.r * 2.1, this.r * 2.1);
+  }
+}
+
+class ShockRing {
+  constructor(x, y, hue, scale, weight) {
+    this.x = x;
+    this.y = y;
+    this.r = 6;
+    this.maxR = random(100, 240) * scale;
+    this.life = 1;
+    this.hue = hue;
+    this.weight = weight;
+    this.dead = false;
+  }
+
+  update() {
+    this.r += (this.maxR - this.r) * 0.1 + 3.2 * this.weight;
+    this.life -= 0.028 / this.weight;
+    if (this.life <= 0 || this.r > this.maxR * 1.2) this.dead = true;
+  }
+
+  display() {
+    const L = constrain(this.life, 0, 1);
+    noFill();
+    stroke(this.hue, 55, 100, 50 * L * this.weight);
+    strokeWeight((2.4 * this.weight + 0.6) * L);
+    ellipse(this.x, this.y, this.r * 2, this.r * 2);
+  }
+}
+
+class Debris {
+  constructor(x, y, pal, scale) {
+    this.x = x;
+    this.y = y;
+    this.px = x;
+    this.py = y;
+    const a = random(TWO_PI);
+    // shell velocity — outer shell faster (supernova-ish)
+    const shell = pow(random(), 0.35);
+    const speed = (shell * random(3, 12) + random(0.5, 2)) * scale;
+    this.vx = cos(a) * speed;
+    this.vy = sin(a) * speed;
+    // almost zero-g; tiny drift only
+    this.ax = random(-0.002, 0.002);
+    this.ay = random(-0.002, 0.002);
+    this.life = 1;
+    this.decay = random(0.006, 0.018) / Math.max(0.4, scale);
+    this.r = random(0.8, 3.5) * scale;
+    this.drag = random(0.978, 0.992);
+    // hot shell vs cooler smoky bits
+    if (random() < 0.35) {
+      this.hue = pal.core + random(-15, 15);
+      this.sat0 = random(10, 40);
+    } else if (random() < 0.5) {
+      this.hue = pal.shell + random(-20, 20);
+      this.sat0 = random(50, 90);
+    } else {
+      this.hue = pal.smoke + random(-15, 15);
+      this.sat0 = random(40, 80);
+    }
+    this.hue = (this.hue + 360) % 360;
+    this.dead = false;
+  }
+
+  update() {
+    this.px = this.x;
+    this.py = this.y;
+    this.vx = (this.vx + this.ax) * this.drag;
+    this.vy = (this.vy + this.ay) * this.drag;
+    this.x += this.vx;
+    this.y += this.vy;
+    this.life -= this.decay;
+    if (this.life <= 0) this.dead = true;
+  }
+
+  display() {
+    const L = constrain(this.life, 0, 1);
+    const sat = this.sat0 * (0.5 + 0.5 * L);
+    const bri = map(L, 1, 0, 100, 15);
+    const a = map(L, 1, 0, 95, 0);
+    // streak = motion trail (plotter / star-streak feel)
+    stroke(this.hue, sat, bri, a);
+    strokeWeight(this.r * L);
+    line(this.px, this.py, this.x, this.y);
+    noStroke();
+    fill(this.hue, sat * 0.5, Math.min(100, bri + 15), a);
+    ellipse(this.x, this.y, this.r * L * 1.4, this.r * L * 1.4);
+  }
+}
+
+class Plasma {
+  constructor(x, y, pal, scale) {
+    this.x = x;
+    this.y = y;
+    const a = random(TWO_PI);
+    const speed = random(0.8, 5.5) * scale;
+    this.vx = cos(a) * speed;
+    this.vy = sin(a) * speed;
+    this.life = 1;
+    this.decay = random(0.01, 0.028);
+    this.r = random(3, 14) * scale;
+    this.hue = (pal.smoke + random(-30, 40) + 360) % 360;
+    this.dead = false;
+  }
+
+  update() {
+    this.vx *= 0.97;
+    this.vy *= 0.97;
+    this.x += this.vx;
+    this.y += this.vy;
+    this.r *= 1.012;
+    this.life -= this.decay;
+    if (this.life <= 0) this.dead = true;
+  }
+
+  display() {
+    const L = constrain(this.life, 0, 1);
+    noStroke();
+    // soft nebula blobs
+    fill(this.hue, 60, 80, 18 * L);
+    ellipse(this.x, this.y, this.r * 2.2, this.r * 2.2);
+    fill(this.hue, 40, 95, 28 * L);
+    ellipse(this.x, this.y, this.r, this.r);
+  }
+}
+
+function mousePressed() {
+  if (event && event.target && event.target.closest && event.target.closest('#touch-bar')) return;
+  detonate(mouseX, mouseY, random(0.9, 1.5));
+  nextAutoAt = millis() + random(600, 1000);
+}
+
+function touchStarted() {
+  if (event && event.target && event.target.closest && event.target.closest('#touch-bar')) {
+    return false;
+  }
+  if (touches && touches.length) {
+    detonate(touches[0].x, touches[0].y, random(0.9, 1.5));
+    nextAutoAt = millis() + random(600, 1000);
+  }
+  return false;
+}
+
+function keyPressed() {
+  if (key === ' ') paused = !paused;
+  if (key === 'b' || key === 'B') {
+    detonate(width * 0.5, height * 0.5, 1.35);
+    nextAutoAt = millis() + 800;
+  }
+  if (key === 'c' || key === 'C') {
+    background(250, 30, 2);
+  }
+  if (key === 'r' || key === 'R') {
+    debris = [];
+    plasma = [];
+    rings = [];
+    flashes = [];
+    blastId = 0;
+    seedStars();
+    background(250, 30, 2);
+    nextAutoAt = millis() + 100;
+  }
+}
+
+function windowResized() {
+  resizeCanvas(windowWidth, windowHeight);
+  seedStars();
+  background(250, 30, 2);
+}
+
+function wireTouchBar() {
+  const bar = document.getElementById('touch-bar');
+  if (!bar) return;
+  bar.querySelectorAll('button').forEach((btn) => {
+    btn.addEventListener('pointerdown', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const act = btn.getAttribute('data-act');
+      if (act === 'pause') paused = !paused;
+      if (act === 'boom') {
+        detonate(width * 0.5, height * 0.5, 1.4);
+        nextAutoAt = millis() + 800;
+      }
+      if (act === 'clear') background(250, 30, 2);
+      if (act === 'reset') {
+        debris = [];
+        plasma = [];
+        rings = [];
+        flashes = [];
+        blastId = 0;
+        seedStars();
+        background(250, 30, 2);
+        nextAutoAt = millis() + 100;
+      }
+    });
+  });
+}
+</script>
+</body>
+</html>

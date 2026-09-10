@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <title>template</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      background: #0c0e16;
+      overflow: hidden;
+      font-family: system-ui, sans-serif;
+      touch-action: none;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    canvas { display: block; width: 100%; height: 100%; }
+    #touch-bar {
+      display: none;
+      position: fixed;
+      left: 8px; right: 8px; bottom: max(8px, env(safe-area-inset-bottom));
+      z-index: 10;
+      gap: 6px;
+      grid-template-columns: repeat(3, 1fr);
+    }
+    html.input-touch #touch-bar, html.device-phone #touch-bar, html.device-tablet #touch-bar {
+      display: grid;
+    }
+    #touch-bar button {
+      min-height: 44px;
+      border-radius: 8px;
+      border: 1px solid rgba(120, 200, 180, 0.35);
+      background: rgba(10, 14, 24, 0.82);
+      color: #c8ffe8;
+      font: 600 11px/1 system-ui, sans-serif;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    #touch-bar button:active { background: rgba(40, 140, 120, 0.4); }
+  </style>
+  <script src="device.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.11.3/lib/p5.min.js"></script>
+</head>
+<body>
+  <div id="touch-bar" aria-label="Touch controls">
+    <button type="button" data-act="pause">Pause</button>
+    <button type="button" data-act="hex">Hex</button>
+    <button type="button" data-act="reset">Reset</button>
+  </div>
+<script>
+/**
+ * template — p5.js starter (port of sketches/template/template.pde)
+ *
+ * space pause · h hex · r reset · click spawn
+ */
+
+let particles = [];
+let paused = false;
+let showHex = true;
+
+function setup() {
+  createCanvas(windowWidth, windowHeight);
+  const p = window.DeviceProfile && DeviceProfile.get && DeviceProfile.get();
+  const dpr = (p && p.isPhone) ? Math.min(window.devicePixelRatio || 1, 2) : (window.devicePixelRatio || 1);
+  pixelDensity(dpr);
+  // RGB like the Processing template (not HSB)
+  colorMode(RGB, 255);
+  for (let i = 0; i < 80; i++) {
+    particles.push(new Particle(random(width), random(height)));
+  }
+  wireTouchBar();
+}
+
+function draw() {
+  background(12, 14, 22);
+
+  if (!paused) {
+    for (let i = 0; i < particles.length; i++) {
+      particles[i].update();
+    }
+  }
+
+  // soft connections
+  stroke(90, 140, 200, 40);
+  strokeWeight(1);
+  for (let i = 0; i < particles.length; i++) {
+    const a = particles[i];
+    for (let j = i + 1; j < particles.length; j++) {
+      const b = particles[j];
+      const d = dist(a.x, a.y, b.x, b.y);
+      if (d < 90) {
+        line(a.x, a.y, b.x, b.y);
+      }
+    }
+  }
+
+  noStroke();
+  for (let i = 0; i < particles.length; i++) {
+    particles[i].display();
+  }
+
+  if (showHex) {
+    drawHexHint(mouseX, mouseY, 28);
+  }
+
+  fill(200, 210, 230, 180);
+  noStroke();
+  textSize(12);
+  textAlign(LEFT, BASELINE);
+  text("space pause  ·  h hex  ·  r reset  ·  click spawn", 12, height - 14);
+}
+
+function mousePressed() {
+  particles.push(new Particle(mouseX, mouseY));
+}
+
+function touchStarted() {
+  // spawn on touch (same as click)
+  if (touches && touches.length) {
+    particles.push(new Particle(touches[0].x, touches[0].y));
+  }
+  return false;
+}
+
+function keyPressed() {
+  if (key === " ") paused = !paused;
+  if (key === "h" || key === "H") showHex = !showHex;
+  if (key === "r" || key === "R") {
+    particles = [];
+    for (let i = 0; i < 80; i++) {
+      particles.push(new Particle(random(width), random(height)));
+    }
+  }
+}
+
+function windowResized() {
+  resizeCanvas(windowWidth, windowHeight);
+}
+
+function wireTouchBar() {
+  const bar = document.getElementById('touch-bar');
+  if (!bar) return;
+  bar.querySelectorAll('button').forEach((btn) => {
+    btn.addEventListener('pointerdown', (ev) => {
+      ev.preventDefault();
+      const act = btn.getAttribute('data-act');
+      if (act === 'pause') paused = !paused;
+      if (act === 'hex') showHex = !showHex;
+      if (act === 'reset') {
+        particles = [];
+        for (let i = 0; i < 80; i++) {
+          particles.push(new Particle(random(width), random(height)));
+        }
+      }
+    });
+  });
+}
+
+function drawHexHint(cx, cy, r) {
+  noFill();
+  stroke(120, 200, 180, 90);
+  strokeWeight(1.5);
+  beginShape();
+  for (let i = 0; i < 6; i++) {
+    const a = TWO_PI * i / 6.0 - HALF_PI;
+    vertex(cx + cos(a) * r, cy + sin(a) * r);
+  }
+  endShape(CLOSE);
+}
+
+class Particle {
+  constructor(x, y) {
+    this.x = x;
+    this.y = y;
+    this.vx = random(-0.6, 0.6);
+    this.vy = random(-0.6, 0.6);
+    this.r = random(2, 5);
+    this.c = color(140 + random(80), 180 + random(50), 220 + random(35), 200);
+  }
+
+  update() {
+    const d = Math.max(40, dist(mouseX, mouseY, this.x, this.y));
+    this.vx += ((mouseX - this.x) / d) * 0.02;
+    this.vy += ((mouseY - this.y) / d) * 0.02;
+    this.vx *= 0.98;
+    this.vy *= 0.98;
+    this.x += this.vx;
+    this.y += this.vy;
+
+    if (this.x < -10) this.x = width + 10;
+    if (this.x > width + 10) this.x = -10;
+    if (this.y < -10) this.y = height + 10;
+    if (this.y > height + 10) this.y = -10;
+  }
+
+  display() {
+    fill(this.c);
+    ellipse(this.x, this.y, this.r * 2, this.r * 2);
+  }
+}
+</script>
+</body>
+</html>
