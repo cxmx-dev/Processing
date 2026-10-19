@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <title>2-explode</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      background: #000008;
+      overflow: hidden;
+      font-family: system-ui, sans-serif;
+      touch-action: none;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    canvas { display: block; width: 100%; height: 100%; }
+    #touch-bar {
+      display: none;
+      position: fixed;
+      left: 8px; right: 8px; bottom: max(8px, env(safe-area-inset-bottom));
+      z-index: 10;
+      gap: 6px;
+      grid-template-columns: repeat(4, 1fr);
+    }
+    html.input-touch #touch-bar, html.device-phone #touch-bar, html.device-tablet #touch-bar {
+      display: grid;
+    }
+    #touch-bar button {
+      min-height: 44px;
+      border-radius: 8px;
+      border: 1px solid rgba(255, 190, 120, 0.4);
+      background: rgba(8, 6, 12, 0.88);
+      color: #ffe8c8;
+      font: 600 11px/1 system-ui, sans-serif;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    #touch-bar button:active { background: rgba(160, 80, 30, 0.45); }
+  </style>
+  <script src="device.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.11.3/lib/p5.min.js"></script>
+</head>
+<body>
+  <div id="touch-bar" aria-label="Touch controls">
+    <button type="button" data-act="pause">Pause</button>
+    <button type="button" data-act="boom">Boom</button>
+    <button type="button" data-act="clear">Clear</button>
+    <button type="button" data-act="reset">Reset</button>
+  </div>
+<script>
+/**
+ * 2-explode — classic space fireball, forever
+ * Reference: soft billowing cream/orange nuclear cloud + white equatorial
+ * energy disc in a starfield. No spacecraft.
+ *
+ * space pause · b / click boom · c clear · r reseed
+ */
+
+let stars = [];
+let blasts = [];
+let paused = false;
+let nextAutoAt = 0;
+let seedN = 0;
+
+function setup() {
+  createCanvas(windowWidth, windowHeight);
+  const p = window.DeviceProfile && DeviceProfile.get && DeviceProfile.get();
+  const dpr = (p && p.isPhone)
+    ? Math.min(window.devicePixelRatio || 1, 2)
+    : (window.devicePixelRatio || 1);
+  pixelDensity(dpr);
+  colorMode(RGB, 255, 255, 255, 255);
+  seedStars();
+  background(0, 0, 6);
+  // first detonation almost immediately
+  spawnBlast(width * 0.5, height * 0.5, 1);
+  nextAutoAt = millis() + 2800;
+  wireTouchBar();
+}
+
+function seedStars() {
+  stars = [];
+  const n = Math.floor(Math.min(width, height) * 0.28 + 60);
+  for (let i = 0; i < n; i++) {
+    const purple = random() < 0.18;
+    stars.push({
+      x: random(width),
+      y: random(height),
+      r: random(0.5, 2.2),
+      base: random(90, 255),
+      tw: random(TWO_PI),
+      sp: random(0.008, 0.035),
+      purple
+    });
+  }
+}
+
+function draw() {
+  // deep space — full wipe keeps the cloud crisp like the film frame
+  background(0, 0, 8);
+
+  drawStars();
+
+  if (!paused) {
+    // chain forever: when current peak is past, schedule / fire next
+    for (let i = blasts.length - 1; i >= 0; i--) {
+      blasts[i].update();
+      if (blasts[i].dead) blasts.splice(i, 1);
+    }
+    if (millis() >= nextAutoAt || blasts.length === 0) {
+      autoBoom();
+    }
+  }
+
+  // draw from oldest (dimmer residual) to newest
+  for (let i = 0; i < blasts.length; i++) {
+    blasts[i].display();
+  }
+
+  const prof = window.DeviceProfile && DeviceProfile.get && DeviceProfile.get();
+  if (!prof || !prof.isTouch) {
+    fill(255, 220, 180, 90);
+    noStroke();
+    textSize(11);
+    textAlign(LEFT, BASELINE);
+    text("space pause  ·  click / b boom  ·  c clear  ·  r reseed", 12, height - 14);
+  }
+}
+
+function drawStars() {
+  noStroke();
+  for (let i = 0; i < stars.length; i++) {
+    const s = stars[i];
+    const tw = 0.55 + 0.45 * sin(millis() * s.sp + s.tw);
+    const a = s.base * tw;
+    if (s.purple) {
+      fill(200, 120, 255, a * 0.55);
+    } else {
+      fill(255, 250, 240, a * 0.45);
+    }
+    ellipse(s.x, s.y, s.r * tw, s.r * tw);
+  }
+}
+
+function autoBoom() {
+  // mostly centered like the reference shot; occasional offset
+  let x = width * 0.5;
+  let y = height * 0.5;
+  let sc = random(0.85, 1.15);
+  if (random() < 0.25) {
+    x += randomGaussian() * width * 0.08;
+    y += randomGaussian() * height * 0.06;
+    sc *= random(0.7, 1);
+  }
+  spawnBlast(x, y, sc);
+  // duration ~2.6–3.8s rise+fall; overlap slightly so the loop feels continuous
+  nextAutoAt = millis() + random(2400, 3600);
+}
+
+function spawnBlast(x, y, scale) {
+  seedN++;
+  blasts.push(new Fireball(x, y, scale, seedN * 9973));
+  // cap concurrent so phones stay smooth
+  while (blasts.length > 3) blasts.shift();
+}
+
+/**
+ * Soft cauliflower fireball: stacked translucent lobes + white equatorial disc.
+ * Shape inspired by classic VFX "nuclear / space" explosions (no craft).
+ */
+class Fireball {
+  constructor(x, y, scale, noiseSeed) {
+    this.x = x;
+    this.y = y;
+    this.scale = scale || 1;
+    this.t = 0;           // 0 → 1 life
+    this.speed = random(0.0055, 0.0075); // full cycle ~2–3s at 60fps
+    this.dead = false;
+    this.nseed = noiseSeed || random(99999);
+    this.rot = random(-0.12, 0.12);
+
+    // cauliflower lobes — offset blobs that make the mushroom billow
+    this.lobes = [];
+    const lobeCount = 14 + Math.floor(random(6));
+    for (let i = 0; i < lobeCount; i++) {
+      const a = random(TWO_PI);
+      const dist = random(0.05, 0.55);
+      this.lobes.push({
+        ox: cos(a) * dist,
+        oy: sin(a) * dist * random(0.75, 1.15),
+        r: random(0.28, 0.62),
+        phase: random(TWO_PI),
+        wobble: random(0.4, 1.2)
+      });
+    }
+    // a few larger body masses for the main bulk
+    for (let i = 0; i < 5; i++) {
+      const a = random(TWO_PI);
+      this.lobes.push({
+        ox: cos(a) * random(0, 0.22),
+        oy: sin(a) * random(0, 0.2),
+        r: random(0.55, 0.95),
+        phase: random(TWO_PI),
+        wobble: random(0.3, 0.7)
+      });
+    }
+  }
+
+  update() {
+    this.t += this.speed;
+    if (this.t >= 1) this.dead = true;
+  }
+
+  /** envelope: fast rise, hold, soft fall — reads as a film detonation */
+  envelope() {
+    const t = this.t;
+    if (t < 0.12) return easeOutCubic(t / 0.12);
+    if (t < 0.45) return 1;
+    return 1 - easeInCubic((t - 0.45) / 0.55);
+  }
+
+  radiusBase() {
+    // expands through the life
+    const grow = easeOutCubic(constrain(this.t / 0.55, 0, 1));
+    const base = Math.min(width, height) * 0.38 * this.scale;
+    return base * (0.35 + grow * 0.75);
+  }
+
+  display() {
+    const env = this.envelope();
+    if (env <= 0.01) return;
+
+    const R = this.radiusBase();
+    const cx = this.x;
+    const cy = this.y;
+    const nOff = this.nseed * 0.001 + this.t * 1.4;
+
+    push();
+    translate(cx, cy);
+    rotate(this.rot);
+
+    // --- outer glow halo (warm, soft) ---
+    noStroke();
+    for (let i = 5; i >= 1; i--) {
+      const rr = R * (1.15 + i * 0.18);
+      fill(255, 140, 40, 6 * env * (i / 5));
+      ellipse(0, 0, rr * 2.1, rr * 1.95);
+    }
+
+    // --- billowing cloud lobes (dark amber → cream, back to front) ---
+    // draw larger/dimmer first
+    const sorted = this.lobes.slice().sort((a, b) => b.r - a.r);
+    for (let i = 0; i < sorted.length; i++) {
+      const L = sorted[i];
+      const wob =
+        1 +
+        0.08 * sin(this.t * 10 + L.phase) * L.wobble +
+        0.06 * noise(nOff + L.ox * 3, L.oy * 3);
+      const lx = L.ox * R * (0.9 + 0.15 * this.t);
+      const ly = L.oy * R * (0.9 + 0.12 * this.t);
+      const lr = L.r * R * wob;
+
+      // outer smoke shell
+      fill(180, 70, 20, 28 * env);
+      ellipse(lx, ly, lr * 2.15, lr * 2.0);
+
+      // mid orange
+      fill(255, 140, 50, 42 * env);
+      ellipse(lx * 0.92, ly * 0.92, lr * 1.7, lr * 1.6);
+
+      // hot cream
+      fill(255, 220, 140, 55 * env);
+      ellipse(lx * 0.75, ly * 0.75, lr * 1.2, lr * 1.15);
+
+      // bright tip
+      fill(255, 245, 210, 70 * env);
+      ellipse(lx * 0.55, ly * 0.55, lr * 0.65, lr * 0.6);
+    }
+
+    // --- extra noise speckles for cauliflower texture ---
+    const dots = 90;
+    for (let i = 0; i < dots; i++) {
+      const a = (i / dots) * TWO_PI * 2.7 + this.nseed;
+      const d = (0.25 + 0.7 * noise(i * 0.17 + nOff, this.nseed)) * R;
+      const px = cos(a) * d;
+      const py = sin(a) * d * 0.92;
+      const pr = (0.08 + 0.12 * noise(i * 0.3, nOff)) * R;
+      const heat = noise(i * 0.11, nOff + 2);
+      if (heat > 0.55) {
+        fill(255, 240, 190, 50 * env * heat);
+      } else {
+        fill(255, 150, 60, 40 * env);
+      }
+      ellipse(px, py, pr * 2, pr * 1.85);
+    }
+
+    // --- bright core ---
+    for (let i = 4; i >= 1; i--) {
+      const f = i / 4;
+      fill(255, 255 - 20 * (1 - f), 220 - 40 * (1 - f), 90 * env * f);
+      ellipse(0, 0, R * 0.55 * f, R * 0.48 * f);
+    }
+    fill(255, 255, 255, 120 * env);
+    ellipse(0, 0, R * 0.18, R * 0.14);
+
+    // --- equatorial energy disc / plane (the white bar in the reference) ---
+    this.drawEnergyDisc(R, env);
+
+    pop();
+  }
+
+  drawEnergyDisc(R, env) {
+    // soft wide disc first
+    noStroke();
+    for (let i = 6; i >= 1; i--) {
+      const w = R * (1.6 + i * 0.35);
+      const h = R * (0.04 + i * 0.018);
+      fill(255, 230, 180, 10 * env * (i / 6));
+      ellipse(0, 0, w, h);
+    }
+
+    // hard bright plane
+    fill(255, 250, 230, 160 * env);
+    ellipse(0, 0, R * 2.35, R * 0.055);
+
+    // razor core line
+    fill(255, 255, 255, 220 * env);
+    ellipse(0, 0, R * 2.5, R * 0.018);
+
+    // left / right limb glow (energy extending into space)
+    fill(255, 240, 200, 90 * env);
+    ellipse(-R * 1.15, 0, R * 0.35, R * 0.04);
+    ellipse(R * 1.15, 0, R * 0.35, R * 0.04);
+
+    // tiny vertical bloom at center (lens cross)
+    fill(255, 255, 255, 70 * env);
+    ellipse(0, 0, R * 0.08, R * 0.35);
+  }
+}
+
+function easeOutCubic(x) {
+  return 1 - Math.pow(1 - x, 3);
+}
+function easeInCubic(x) {
+  return x * x * x;
+}
+
+function mousePressed() {
+  if (event && event.target && event.target.closest && event.target.closest('#touch-bar')) return;
+  spawnBlast(mouseX, mouseY, random(0.75, 1.2));
+  nextAutoAt = millis() + random(2600, 3400);
+}
+
+function touchStarted() {
+  if (event && event.target && event.target.closest && event.target.closest('#touch-bar')) {
+    return false;
+  }
+  if (touches && touches.length) {
+    spawnBlast(touches[0].x, touches[0].y, random(0.75, 1.2));
+    nextAutoAt = millis() + random(2600, 3400);
+  }
+  return false;
+}
+
+function keyPressed() {
+  if (key === ' ') paused = !paused;
+  if (key === 'b' || key === 'B') {
+    spawnBlast(width * 0.5, height * 0.5, 1.05);
+    nextAutoAt = millis() + 3000;
+  }
+  if (key === 'c' || key === 'C') {
+    blasts = [];
+    background(0, 0, 8);
+  }
+  if (key === 'r' || key === 'R') {
+    blasts = [];
+    seedStars();
+    background(0, 0, 8);
+    spawnBlast(width * 0.5, height * 0.5, 1);
+    nextAutoAt = millis() + 2800;
+  }
+}
+
+function windowResized() {
+  resizeCanvas(windowWidth, windowHeight);
+  seedStars();
+  background(0, 0, 8);
+}
+
+function wireTouchBar() {
+  const bar = document.getElementById('touch-bar');
+  if (!bar) return;
+  bar.querySelectorAll('button').forEach((btn) => {
+    btn.addEventListener('pointerdown', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const act = btn.getAttribute('data-act');
+      if (act === 'pause') paused = !paused;
+      if (act === 'boom') {
+        spawnBlast(width * 0.5, height * 0.5, 1.05);
+        nextAutoAt = millis() + 3000;
+      }
+      if (act === 'clear') {
+        blasts = [];
+        background(0, 0, 8);
+      }
+      if (act === 'reset') {
+        blasts = [];
+        seedStars();
+        background(0, 0, 8);
+        spawnBlast(width * 0.5, height * 0.5, 1);
+        nextAutoAt = millis() + 2800;
+      }
+    });
+  });
+}
+</script>
+</body>
+</html>

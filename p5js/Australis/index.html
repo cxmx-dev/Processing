@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <title>Australis</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      background: #000006;
+      overflow: hidden;
+      font-family: system-ui, sans-serif;
+      touch-action: none;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    canvas { display: block; width: 100%; height: 100%; }
+    #hud {
+      position: fixed;
+      left: 12px;
+      bottom: max(10px, env(safe-area-inset-bottom));
+      z-index: 5;
+      color: rgba(255, 190, 160, 0.4);
+      font: 11px/1.3 system-ui, sans-serif;
+      pointer-events: none;
+    }
+    #hud.hidden { display: none; }
+    #touch-bar {
+      display: none;
+      position: fixed;
+      left: 8px; right: 8px;
+      bottom: max(8px, env(safe-area-inset-bottom));
+      z-index: 10;
+      gap: 6px;
+      grid-template-columns: repeat(4, 1fr);
+    }
+    html.input-touch #touch-bar,
+    html.device-phone #touch-bar,
+    html.device-tablet #touch-bar {
+      display: grid;
+    }
+    html.input-touch #hud,
+    html.device-phone #hud,
+    html.device-tablet #hud {
+      bottom: 60px;
+    }
+    #touch-bar button {
+      min-height: 44px;
+      border-radius: 8px;
+      border: 1px solid rgba(220, 80, 60, 0.45);
+      background: rgba(10, 4, 12, 0.9);
+      color: #ffc8b0;
+      font: 600 11px/1 system-ui, sans-serif;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    #touch-bar button:active { background: rgba(140, 30, 40, 0.5); }
+  </style>
+  <script src="device.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.11.3/lib/p5.min.js"></script>
+</head>
+<body>
+  <div id="hud">space pause · d seed · p pulse · r reset · h hud · drag gaze</div>
+  <div id="touch-bar" aria-label="Touch controls">
+    <button type="button" data-act="pause">Pause</button>
+    <button type="button" data-act="drift">Seed</button>
+    <button type="button" data-act="pulse">Pulse</button>
+    <button type="button" data-act="reset">Reset</button>
+  </div>
+<script>
+/**
+ * Australis — H-alpha emission nebula
+ *
+ * GPU path: one full-screen WEBGL fragment shader (FBM + ridge filaments +
+ * procedural stars + hero blooms). CPU path was choppy at 2560×1440 and
+ * still looked like orbs/worms — not the telescope still.
+ *
+ * Honest ceiling in p5.js without a photo texture: generative match of
+ * structure/color/depth, not a pixel clone. This is the practical max.
+ *
+ * space pause · d reseed · p pulse · r reset · h hud · drag gaze
+ */
+
+const V_SRC = `
+precision mediump float;
+attribute vec3 aPosition;
+attribute vec2 aTexCoord;
+varying vec2 vUv;
+uniform mat4 uModelViewMatrix;
+uniform mat4 uProjectionMatrix;
+void main() {
+  vUv = aTexCoord;
+  gl_Position = uProjectionMatrix * uModelViewMatrix * vec4(aPosition, 1.0);
+}
+`;
+
+const F_SRC = `
+precision mediump float;
+varying vec2 vUv;
+uniform vec2 uRes;
+uniform float uTime;
+uniform float uSeed;
+uniform float uPulse;
+uniform float uBreath;
+uniform vec2 uGaze;
+uniform float uQuality; // 0 = phone, 1 = desktop
+
+float hash(vec2 p) {
+  p = fract(p * vec2(123.34, 456.21) + uSeed * 0.017);
+  p += dot(p, p + 45.32);
+  return fract(p.x * p.y);
+}
+
+float noise(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  float a = hash(i);
+  float b = hash(i + vec2(1.0, 0.0));
+  float c = hash(i + vec2(0.0, 1.0));
+  float d = hash(i + vec2(1.0, 1.0));
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+float fbm(vec2 p, int oct) {
+  float v = 0.0;
+  float a = 0.5;
+  mat2 m = mat2(1.6, 1.2, -1.2, 1.6);
+  for (int i = 0; i < 7; i++) {
+    if (i >= oct) break;
+    v += a * noise(p);
+    p = m * p;
+    a *= 0.5;
+  }
+  return v;
+}
+
+float ridge(vec2 p, int oct) {
+  float v = 0.0;
+  float a = 0.5;
+  mat2 m = mat2(1.7, 1.2, -1.2, 1.7);
+  for (int i = 0; i < 6; i++) {
+    if (i >= oct) break;
+    float n = 1.0 - abs(noise(p) * 2.0 - 1.0);
+    n *= n;
+    v += a * n;
+    p = m * p + 0.7;
+    a *= 0.5;
+  }
+  return v;
+}
+
+void main() {
+  vec2 uv = vUv;
+  // aspect-correct coords centered on screen
+  float aspect = uRes.x / max(uRes.y, 1.0);
+  vec2 p = (uv - 0.5) * vec2(aspect, 1.0);
+  p += uGaze * 0.05;
+
+  float t = uTime * 0.07;
+  float breath = uBreath + uPulse * 0.35;
+
+  int oct = uQuality > 0.5 ? 6 : 4;
+  int roct = uQuality > 0.5 ? 5 : 3;
+
+  // domain warp — flowing gas, not static blobs
+  vec2 q = p * 1.2;
+  vec2 w1 = vec2(
+    fbm(q + vec2(0.0, t * 0.35), oct),
+    fbm(q + vec2(5.2, 1.3) - t * 0.28, oct)
+  );
+  vec2 w2 = vec2(
+    fbm(q + 2.1 * w1 + vec2(1.7, 9.2) + t * 0.14, oct),
+    fbm(q + 2.1 * w1 + vec2(8.3, 2.8) - t * 0.11, oct)
+  );
+
+  vec2 cloudUV = p * 1.55 + 2.4 * w2;
+  float dens = fbm(cloudUV, oct);
+  dens = dens * dens * (0.85 + 0.4 * w1.x);
+
+  // composition envelope (upper-center mass + side arms, like the still)
+  float env = 1.0 - smoothstep(0.12, 1.05, length(p * vec2(0.82, 1.05) - vec2(-0.04, -0.1)));
+  float env2 = 1.0 - smoothstep(0.08, 0.72, length(p - vec2(-0.48, 0.02)));
+  float env3 = 1.0 - smoothstep(0.06, 0.68, length(p - vec2(0.38, -0.18)));
+  float env4 = 1.0 - smoothstep(0.05, 0.55, length(p - vec2(-0.15, -0.35)));
+  float shape = clamp(env * 1.1 + env2 * 0.6 + env3 * 0.5 + env4 * 0.35, 0.0, 1.5);
+
+  dens *= shape * breath;
+
+  // dust lanes carve structure
+  float dust = fbm(p * 2.6 + w1 * 1.4 + 18.0, 4);
+  dens *= mix(0.32, 1.18, smoothstep(0.22, 0.72, dust));
+
+  // filament / lace ridges
+  float fil = ridge(cloudUV * 1.35 + w2 * 0.75, roct);
+  fil = pow(fil, 1.55);
+  dens += fil * 0.48 * shape * breath;
+
+  float lace = ridge(cloudUV * 3.1 - t * 0.18, 3);
+  dens += lace * 0.2 * shape;
+
+  dens = clamp(dens, 0.0, 1.85);
+
+  // H-alpha ramp
+  vec3 deep = vec3(0.05, 0.01, 0.025);
+  vec3 crimson = vec3(0.42, 0.035, 0.05);
+  vec3 scarlet = vec3(0.88, 0.11, 0.05);
+  vec3 coral = vec3(1.0, 0.34, 0.1);
+  vec3 amber = vec3(1.0, 0.7, 0.32);
+  vec3 hot = vec3(1.0, 0.93, 0.78);
+
+  float d = dens;
+  vec3 col = deep;
+  col = mix(col, crimson, smoothstep(0.04, 0.22, d));
+  col = mix(col, scarlet, smoothstep(0.18, 0.42, d));
+  col = mix(col, coral, smoothstep(0.38, 0.68, d));
+  col = mix(col, amber, smoothstep(0.62, 0.95, d) * (0.5 + fil * 0.5));
+  float core = smoothstep(0.88, 1.35, d + fil * 0.28);
+  col = mix(col, hot, core * 0.55);
+
+  vec3 magenta = vec3(0.5, 0.07, 0.22);
+  col = mix(col, magenta, (1.0 - smoothstep(0.08, 0.38, d)) * shape * 0.22);
+
+  col *= 0.5 + d * 0.95;
+
+  vec3 voidCol = vec3(0.008, 0.004, 0.018);
+  float cover = smoothstep(0.015, 0.32, dens);
+  col = mix(voidCol, col, cover);
+
+  // --- starfield (procedural cells) ---
+  float starScale = uQuality > 0.5 ? 150.0 : 95.0;
+  vec2 sp = uv * starScale;
+  vec2 sid = floor(sp);
+  vec2 sf = fract(sp) - 0.5;
+  float sh = hash(sid + 3.1);
+  if (sh > 0.915) {
+    float sz = 0.01 + (sh - 0.915) * 0.12;
+    float star = smoothstep(sz, 0.0, length(sf));
+    vec3 sc = mix(vec3(1.0, 0.96, 0.9), vec3(0.65, 0.82, 1.0), hash(sid + 8.0));
+    sc = mix(sc, vec3(1.0, 0.72, 0.45), step(0.975, sh));
+    float tw = 0.72 + 0.28 * sin(uTime * (1.2 + sh * 2.5) + sh * 30.0);
+    float behind = mix(1.0, 0.22, cover * 0.9);
+    col += sc * star * tw * 0.9 * behind;
+  }
+
+  // mid-bright stars
+  sp = uv * (uQuality > 0.5 ? 52.0 : 34.0);
+  sid = floor(sp);
+  sf = fract(sp) - 0.5;
+  sh = hash(sid + 19.0);
+  if (sh > 0.945) {
+    float sz = 0.025 + (sh - 0.945) * 0.35;
+    float star = 1.0 / (1.0 + (length(sf) * length(sf)) * (90.0 / max(sz * 50.0, 0.01)));
+    vec3 sc = mix(vec3(1.0), vec3(0.7, 0.85, 1.0), hash(sid + 2.2));
+    float tw = 0.78 + 0.22 * sin(uTime * 1.8 + sh * 12.0);
+    col += sc * star * tw * 0.5 * mix(1.0, 0.35, cover * 0.75);
+  }
+
+  // --- hero stars (reference composition) ---
+  // 0 center blue, 1 amber below, 2-4 chain, 5 left amber, 6 blue, 7 gold, ...
+  for (int i = 0; i < 10; i++) {
+    vec2 hc;
+    if (i == 0) hc = vec2(0.03, -0.04);
+    else if (i == 1) hc = vec2(-0.05, 0.14);
+    else if (i == 2) hc = vec2(0.05, 0.30);
+    else if (i == 3) hc = vec2(0.09, 0.44);
+    else if (i == 4) hc = vec2(0.13, 0.58);
+    else if (i == 5) hc = vec2(-0.44, -0.06);
+    else if (i == 6) hc = vec2(-0.30, -0.24);
+    else if (i == 7) hc = vec2(0.30, -0.20);
+    else if (i == 8) hc = vec2(0.20, -0.34);
+    else hc = vec2(-0.58, 0.18);
+
+    hc += (vec2(hash(vec2(float(i), uSeed * 0.1)), hash(vec2(uSeed * 0.1, float(i) + 4.0))) - 0.5) * 0.035;
+
+    float dist = length(p - hc);
+    float size = 0.014;
+    if (i == 0) size = 0.030;
+    else if (i == 1) size = 0.027;
+    else if (i == 5) size = 0.023;
+    else if (i == 7) size = 0.021;
+    else if (i == 2) size = 0.018;
+    else if (i == 3) size = 0.016;
+
+    float g = size * (2.6 + uPulse * 0.8);
+    float glow = exp(-dist * dist / (g * g * 2.2));
+    float coreS = exp(-dist * dist / (size * size * 0.32));
+
+    vec3 hcol;
+    if (i == 1 || i == 5 || i == 7 || i == 8) hcol = vec3(1.0, 0.72, 0.32);
+    else if (i == 0 || i == 2 || i == 3 || i == 4 || i == 6) hcol = vec3(0.72, 0.86, 1.0);
+    else hcol = vec3(1.0, 0.98, 0.95);
+
+    float tw = 0.9 + 0.1 * sin(uTime * 1.4 + float(i) * 2.1);
+    col += hcol * glow * 0.58 * tw * breath;
+    col += vec3(1.0) * coreS * 1.15 * tw;
+
+    // soft cross spikes
+    float spike =
+      exp(-abs(p.x - hc.x) * 90.0) * exp(-abs(p.y - hc.y) * 9.0) * 0.14 +
+      exp(-abs(p.y - hc.y) * 90.0) * exp(-abs(p.x - hc.x) * 9.0) * 0.14;
+    spike *= smoothstep(0.28, 0.0, dist);
+    col += hcol * spike * 0.32 * tw;
+  }
+
+  // warm illumination in densest gas
+  col += vec3(1.0, 0.42, 0.12) * smoothstep(0.7, 1.25, dens) * 0.12;
+
+  // vignette
+  float vig = smoothstep(1.4, 0.32, length(p * vec2(0.72, 1.0)));
+  col *= mix(0.3, 1.0, vig);
+
+  col = pow(max(col, vec3(0.0)), vec3(0.9));
+  col = col / (1.0 + col * 0.32);
+
+  gl_FragColor = vec4(col, 1.0);
+}
+`;
+
+let sh;
+let paused = false;
+let pulse = 0;
+let seed = 2.4;
+let gazeX = 0;
+let gazeY = 0;
+let showHud = true;
+let playOffset = 0;
+let pauseAt = 0;
+let t0 = 0;
+let isPhone = false;
+let quality = 1.0;
+
+function setup() {
+  const prof = window.DeviceProfile && DeviceProfile.get && DeviceProfile.get();
+  isPhone = !!(prof && prof.isPhone);
+
+  // Cap backing-store pixels — main fix for chop at 2560×1440
+  let dpr = window.devicePixelRatio || 1;
+  const px = window.innerWidth * window.innerHeight;
+  if (isPhone) dpr = Math.min(dpr, 1.25);
+  else if (px > 2.2e6) dpr = Math.min(dpr, 1.15);
+  else if (px > 1.5e6) dpr = Math.min(dpr, 1.35);
+  else dpr = Math.min(dpr, 1.5);
+
+  createCanvas(windowWidth, windowHeight, WEBGL);
+  pixelDensity(dpr);
+  setAttributes('antialias', false);
+  frameRate(60);
+
+  sh = createShader(V_SRC, F_SRC);
+  quality = isPhone ? 0.0 : 1.0;
+  seed = random(1, 400);
+  t0 = millis() / 1000;
+  noStroke();
+  wireTouchBar();
+}
+
+function nowTime() {
+  const n = millis() / 1000;
+  if (paused) return pauseAt - playOffset;
+  return n - playOffset;
+}
+
+function draw() {
+  if (!paused && pulse > 0) pulse *= 0.965;
+
+  const time = nowTime() - t0;
+  const breath = 0.92 + 0.08 * Math.sin(time * 0.4);
+
+  background(0);
+  shader(sh);
+  sh.setUniform('uRes', [width, height]);
+  sh.setUniform('uTime', time);
+  sh.setUniform('uSeed', seed);
+  sh.setUniform('uPulse', pulse);
+  sh.setUniform('uBreath', breath);
+  sh.setUniform('uGaze', [
+    (gazeX / Math.max(width, 1)) * 2.2,
+    (-gazeY / Math.max(height, 1)) * 2.2
+  ]);
+  sh.setUniform('uQuality', quality);
+
+  // Full-viewport plane (WEBGL origin is center)
+  plane(width, height);
+
+  const hud = document.getElementById('hud');
+  if (hud) hud.classList.toggle('hidden', !showHud);
+}
+
+function togglePause() {
+  const n = millis() / 1000;
+  if (!paused) {
+    pauseAt = n;
+    paused = true;
+  } else {
+    playOffset += n - pauseAt;
+    paused = false;
+  }
+}
+
+function reseed() {
+  seed = random(1, 500);
+}
+
+function doPulse() {
+  pulse = 1.0;
+}
+
+function doReset() {
+  gazeX = 0;
+  gazeY = 0;
+  pulse = 0;
+  seed = random(1, 500);
+  playOffset = 0;
+  pauseAt = 0;
+  paused = false;
+  t0 = millis() / 1000;
+}
+
+function mouseDragged() {
+  gazeX += mouseX - pmouseX;
+  gazeY += mouseY - pmouseY;
+  gazeX = constrain(gazeX, -width * 0.2, width * 0.2);
+  gazeY = constrain(gazeY, -height * 0.2, height * 0.2);
+}
+
+function touchMoved() {
+  if (typeof pmouseX === 'number') {
+    gazeX += mouseX - pmouseX;
+    gazeY += mouseY - pmouseY;
+    gazeX = constrain(gazeX, -width * 0.2, width * 0.2);
+    gazeY = constrain(gazeY, -height * 0.2, height * 0.2);
+  }
+  return false;
+}
+
+function mousePressed() {
+  if (event && event.target && event.target.closest && event.target.closest('#touch-bar')) return;
+  pulse = Math.min(1, pulse + 0.5);
+}
+
+function touchStarted() {
+  if (event && event.target && event.target.closest && event.target.closest('#touch-bar')) return false;
+  pulse = Math.min(1, pulse + 0.5);
+  return false;
+}
+
+function keyPressed() {
+  if (key === ' ') togglePause();
+  if (key === 'd' || key === 'D') reseed();
+  if (key === 'p' || key === 'P') doPulse();
+  if (key === 'r' || key === 'R') doReset();
+  if (key === 'h' || key === 'H') showHud = !showHud;
+}
+
+function windowResized() {
+  // re-cap dpr if window size class changes
+  let dpr = window.devicePixelRatio || 1;
+  const px = window.innerWidth * window.innerHeight;
+  if (isPhone) dpr = Math.min(dpr, 1.25);
+  else if (px > 2.2e6) dpr = Math.min(dpr, 1.15);
+  else if (px > 1.5e6) dpr = Math.min(dpr, 1.35);
+  else dpr = Math.min(dpr, 1.5);
+  pixelDensity(dpr);
+  resizeCanvas(windowWidth, windowHeight);
+}
+
+function wireTouchBar() {
+  const bar = document.getElementById('touch-bar');
+  if (!bar) return;
+  bar.querySelectorAll('button').forEach((btn) => {
+    btn.addEventListener('pointerdown', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const act = btn.getAttribute('data-act');
+      if (act === 'pause') togglePause();
+      if (act === 'drift') reseed();
+      if (act === 'pulse') doPulse();
+      if (act === 'reset') doReset();
+    });
+  });
+}
+</script>
+</body>
+</html>
